@@ -2459,9 +2459,16 @@ void sbm_set_recorder(const char *recorder) {
 #define EVIDENCE_CAP 8192
 #define CREDIT_CAP 127
 
+/* Journal note kinds: finding/decision/issue describe the world and its
+ * open questions; success/failure/lesson describe judged outcomes and
+ * what to carry forward. success = went well and why (repeat it);
+ * failure = went badly, the wrong choice or assumption and what it
+ * cost (record the error, not blame); lesson = prescriptive
+ * carry-forward distilled from either. Only issue counts as open. */
 static int kind_valid(const char *k) {
 	return strcmp(k, "finding") == 0 || strcmp(k, "decision") == 0 ||
-	       strcmp(k, "issue") == 0;
+	       strcmp(k, "issue") == 0 || strcmp(k, "success") == 0 ||
+	       strcmp(k, "failure") == 0 || strcmp(k, "lesson") == 0;
 }
 
 static const char *policy_checks[] = {
