@@ -1,6 +1,6 @@
 .TH SAPHIRA-BUILD-MCP 1 "October 2026" "saphira-build-mcp 0.1.0" "Saphira"
 .SH NAME
-saphira-build-mcp \- read-only Saphira build and package queries for AI agents
+saphira-build-mcp \- Saphira build/package queries and evidence journal
 .SH SYNOPSIS
 .B saphira-build-mcp --mcp
 .br
@@ -8,11 +8,14 @@ saphira-build-mcp \- read-only Saphira build and package queries for AI agents
 .SH DESCRIPTION
 .B saphira-build-mcp
 is a local MCP stdio server exposing Saphira package, build-queue,
-artifact and Unix-identity state to agents. It reads the builder
-state only: recipes, the APK and repository databases, the build
+artifact and Unix-identity state to agents, plus an Egg-local
+evidence journal (package notes and policy records). It reads the
+builder state: recipes, the APK and repository databases, the build
 queue and retained logs. It never builds, signs, publishes,
 installs or restarts anything, never executes recipe scripts, and
-never opens a network socket.
+never opens a network socket. Its only write surface is its own
+journal database; there is no recipe, queue, revision, signing,
+publication or installation authority.
 .PP
 With
 .B --mcp
@@ -22,16 +25,45 @@ With
 .B --list-tools
 it prints the tools/list document (also the build-time self-check).
 .SH TOOLS
-Eleven read-only tools: package_search, package_info,
-package_dependencies, package_why_installed, package_installed,
-package_build_status, package_build_history, package_build_log,
-package_artifacts, build_queue, package_identity. Every result ends
+Sixteen tools. Fourteen are read-only: package_search,
+package_info, package_dependencies, package_why_installed,
+package_installed, package_build_status, package_build_history,
+package_build_log, package_artifacts, build_queue,
+package_identity, package_notes_get, package_policy_status,
+package_readiness. Two write only to the journal:
+package_notes_add and package_policy_record. Every result ends
 with a [src: ...] provenance line naming the files read.
+.PP
+Policy records pin the revisions they were verified against
+(recipe, registry and artifact digests). A record whose pins no
+longer match the live state reports STALE; absence of a record
+reports UNVERIFIED. Stale evidence is never presented as valid.
+.SH JOURNAL
+The journal lives in notes.db (live default
+/var/lib/saphira-build/notes.db on Egg) and is append-only:
+new rows supersede, nothing is updated or deleted. Its tables are
+maintained by this program. The database must never be carried in
+/recipes except blank and empty.
+.PP
+Keeper and Homer are backup destinations only. Back up with a
+SQLite-safe snapshot (sqlite3 notes.db .backup snapshot.db, which
+uses the online backup API) and transfer the completed snapshot
+with the existing backup infrastructure. Never copy the live file
+while writes may occur, and never use Git for journal sync.
+.PP
+Journal attribution comes from $SBM_AUTHOR (or the per-call author
+field, defaulting to "unspecified"): attribution, not
+authentication. The recorder field is MCP clientInfo metadata:
+client-reported and unverified.
 .SH ENVIRONMENT
 Data-source paths default to the live system and can be pointed at
 fixtures for testing:
 .B SBM_RECIPES SBM_QUEUE_DB SBM_REPO_DIR SBM_INCOMING SBM_TSV
-.B SBM_PASSWD SBM_GROUP SBM_APKDB
+.B SBM_PASSWD SBM_GROUP SBM_APKDB SBM_NOTES_DB
+.PP
+.B SBM_AUTHOR
+sets the default journal attribution (a per-call author field
+overrides it; "unspecified" when neither is set).
 .SH EXIT STATUS
 0 on success (server exits 0 on stdin EOF). 1 on internal errors.
 2 on usage errors.

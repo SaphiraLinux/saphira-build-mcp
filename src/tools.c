@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ------------------------------------------------------------------ */
@@ -133,7 +134,7 @@ static int read_file_cap(const char *path, size_t cap, gbuf *out,
  * child could not run or be reaped. No timeouts: apk metadata queries
  * are local and fast; a hung apk would hang this call, which the
  * 64K-request / 256K-result caps bound everywhere else. */
-static int run_apk(char *const argv[], gbuf *out, gbuf *errput,
+static int run_capture(char *const argv[], gbuf *out, gbuf *errput,
                    int *truncated, char *err, size_t errsz) {
 	int po[2], pe[2], st;
 	pid_t pid;
@@ -167,7 +168,7 @@ static int run_apk(char *const argv[], gbuf *out, gbuf *errput,
 		close(po[1]);
 		close(pe[0]);
 		close(pe[1]);
-		execvp("apk", argv);
+		execvp(argv[0], argv);
 		_exit(127);
 	}
 	close(po[1]);
@@ -1166,7 +1167,7 @@ static int t_deps(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) 
 		av[1] = "dot";
 		av[2] = (char *)name;
 		av[3] = NULL;
-		rc = run_apk(av, &dot, &dberr, &skipped, ebuf, sizeof ebuf);
+		rc = run_capture(av, &dot, &dberr, &skipped, ebuf, sizeof ebuf);
 		if (rc != 0 || dot.failed) {
 			/* Fallback: recipe-declared deps, explicitly labeled
 			 * unresolved (covers unpublished recipes the live
@@ -1244,7 +1245,7 @@ static int t_deps(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) 
 				av2[2] = NULL;
 				graph_free(&g);
 				memset(&g, 0, sizeof g);
-				rc2 = run_apk(av2, &full, &ferr, &sk2, ebuf, sizeof ebuf);
+				rc2 = run_capture(av2, &full, &ferr, &sk2, ebuf, sizeof ebuf);
 				if (rc2 != 0 || full.failed ||
 				    graph_parse(full.p ? full.p : "", &ns, &g, &sk2) < 0) {
 					gbuf_adds(text, "reverse dependencies unavailable\n");
@@ -1283,7 +1284,7 @@ static int t_deps(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) 
 		av2[0] = "apk";
 		av2[1] = "dot";
 		av2[2] = NULL;
-		rc2 = run_apk(av2, &full, &ferr, &sk2, ebuf, sizeof ebuf);
+		rc2 = run_capture(av2, &full, &ferr, &sk2, ebuf, sizeof ebuf);
 		if (rc2 != 0 || full.failed ||
 		    graph_parse(full.p ? full.p : "", &ns, &g, &sk2) < 0) {
 			gbuf_adds(text, "reverse dependencies unavailable\n");
@@ -1379,7 +1380,7 @@ static int t_why(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
 	av[0] = "apk";
 	av[1] = "dot";
 	av[2] = NULL;
-	rc = run_apk(av, &dot, &dberr, &sk, ebuf, sizeof ebuf);
+	rc = run_capture(av, &dot, &dberr, &sk, ebuf, sizeof ebuf);
 	if (rc != 0 || dot.failed || graph_parse(dot.p ? dot.p : "", &ns, &g, &skipped) < 0) {
 		if (dep_in_declared(pkg, dep)) {
 			gbuf_adds(text, "declared directly (unresolved graph): ");
@@ -2372,6 +2373,752 @@ static int t_identity(jv *args, gbuf *text, int *is_error, char *err, size_t err
 }
 
 /* ------------------------------------------------------------------ */
+/* package evidence journal (notes.db; Egg-local, append-only)         */
+/*                                                                     */
+/* The journal is the MCP's own database: engineering notes and policy */
+/* evidence pinned to the revisions they were verified against.        */
+/* Keeper and Homer are only backup destinations, fed by SQLite-safe   */
+/* snapshots (`sqlite3 notes.db .backup snapshot.db`, which uses the   */
+/* online backup API) - never by copying the live file, and never via  */
+/* Git, which remains source-code version control only. The schema is  */
+/* owned here (CREATE TABLE IF NOT EXISTS on open): notes.db must     */
+/* never be carried in /recipes except blank and empty.                */
+/*                                                                     */
+/* `recorder` is MCP clientInfo metadata: client-reported, unverified, */
+/* displayed as-is, never trusted for decisions (this server makes     */
+/* none). Real attribution lives in `author` ($SBM_AUTHOR).            */
+/* ------------------------------------------------------------------ */
+
+static char journal_recorder[128];
+
+void sbm_set_recorder(const char *recorder) {
+	if (!recorder)
+		recorder = "";
+	snprintf(journal_recorder, sizeof journal_recorder, "%s", recorder);
+}
+
+#define NOTE_TITLE_CAP 256
+#define NOTE_BODY_CAP 4096
+#define EVIDENCE_CAP 8192
+#define CREDIT_CAP 127
+
+static int kind_valid(const char *k) {
+	return strcmp(k, "finding") == 0 || strcmp(k, "decision") == 0 ||
+	       strcmp(k, "issue") == 0;
+}
+
+static const char *policy_checks[] = {
+	"unix-identity",
+	"payload-layout",
+	"revision-discipline",
+	"dependency-closure",
+	"signing-acceptance",
+	NULL
+};
+
+static int check_valid(const char *c) {
+	int i;
+	for (i = 0; policy_checks[i]; i++) {
+		if (strcmp(policy_checks[i], c) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int result_valid(const char *r) {
+	return strcmp(r, "PASS") == 0 || strcmp(r, "FAIL") == 0;
+}
+
+static void resolve_credit(jv *args, char *author, size_t asz) {
+	const char *a = arg_str(args, "author");
+	if (!a || !a[0])
+		a = env_or("SBM_AUTHOR", "");
+	if (!a || !a[0])
+		a = "unspecified";
+	snprintf(author, asz, "%s", a);
+}
+
+static void utc_now(char out[21]) {
+	time_t t = time(NULL);
+	struct tm tm;
+	gmtime_r(&t, &tm);
+	strftime(out, 21, "%Y-%m-%dT%H:%M:%SZ", &tm);
+}
+
+/* Print s indented by two spaces, preserving inner newlines. */
+static void indented(gbuf *b, const char *s) {
+	gbuf_adds(b, "  ");
+	for (; *s; s++) {
+		gbuf_addch(b, *s);
+		if (*s == '\n' && s[1])
+			gbuf_adds(b, "  ");
+	}
+	if (b->len && b->p[b->len - 1] != '\n')
+		gbuf_addch(b, '\n');
+}
+
+/* sha256 hex of one file via the installed coreutils frontend. */
+static int sha256_hex_file(const char *path, char out[65]) {
+	char *av[4];
+	gbuf so, se;
+	int trunc = 0, rc, i;
+	char ebuf[128];
+	gbuf_init(&so);
+	gbuf_init(&se);
+	av[0] = "/bin/sha256sum";
+	av[1] = "--";
+	av[2] = (char *)path;
+	av[3] = NULL;
+	rc = run_capture(av, &so, &se, &trunc, ebuf, sizeof ebuf);
+	if (rc == 0 && !so.failed && so.len >= 65) {
+		for (i = 0; i < 64; i++) {
+			char c = so.p[i];
+			if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+			      (c >= 'A' && c <= 'F')))
+				break;
+		}
+		if (i == 64 && (so.p[64] == ' ' || so.p[64] == '\t')) {
+			memcpy(out, so.p, 64);
+			out[64] = 0;
+			gbuf_free(&so);
+			gbuf_free(&se);
+			return 0;
+		}
+	}
+	gbuf_free(&so);
+	gbuf_free(&se);
+	return -1;
+}
+
+/* Recipe commit via read-only git; "" when unavailable (not a checkout,
+ * git missing, unknown package). Digests remain the freshness key. */
+static void git_recipe_commit(const char *pkg, char out[41]) {
+	char *av[9];
+	gbuf so, se;
+	int trunc = 0, rc, i;
+	char ebuf[128];
+	out[0] = 0;
+	gbuf_init(&so);
+	gbuf_init(&se);
+	av[0] = "git";
+	av[1] = "-C";
+	av[2] = (char *)path_recipes();
+	av[3] = "log";
+	av[4] = "-1";
+	av[5] = "--format=%H";
+	av[6] = "--";
+	av[7] = (char *)pkg;
+	av[8] = NULL;
+	rc = run_capture(av, &so, &se, &trunc, ebuf, sizeof ebuf);
+	if (rc == 0 && !so.failed && so.len >= 41) {
+		for (i = 0; i < 40; i++) {
+			char c = so.p[i];
+			if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+			      (c >= 'A' && c <= 'F')))
+				break;
+		}
+		if (i == 40 && so.p[40] == '\n') {
+			memcpy(out, so.p, 40);
+			out[40] = 0;
+		}
+	}
+	gbuf_free(&so);
+	gbuf_free(&se);
+}
+
+typedef struct {
+	char recipe_commit[41];
+	char recipe_digest[65];
+	char registry_digest[150];
+	char artifact_nvr[256];
+} pins_t;
+
+/* Live pins for freshness comparison. Missing sources pin as "" (or
+ * "-" for artifacts): stable across reads, so absence alone never
+ * flips a record to STALE - only observed change does. */
+static void current_pins(const char *pkg, pins_t *pins) {
+	char rpath[4096], hex[65], frag[4096];
+	char tsvhex[65], fraghex[65];
+	char dbpath[4096], dberr[128];
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	memset(pins, 0, sizeof *pins);
+	git_recipe_commit(pkg, pins->recipe_commit);
+	if (snprintf(rpath, sizeof rpath, "%s/%s/recipe.sh",
+	             path_recipes(), pkg) < (int)sizeof rpath &&
+	    sha256_hex_file(rpath, hex) == 0)
+		memcpy(pins->recipe_digest, hex, 65);
+	if (sha256_hex_file(path_tsv(), tsvhex) == 0) {
+		if (snprintf(frag, sizeof frag, "%s/%s/files/accounts.d/%s",
+		             path_recipes(), pkg, pkg) < (int)sizeof frag &&
+		    sha256_hex_file(frag, fraghex) == 0)
+			snprintf(pins->registry_digest, sizeof pins->registry_digest,
+			         "%s:%s", tsvhex, fraghex);
+		else
+			snprintf(pins->registry_digest, sizeof pins->registry_digest,
+			         "%s:-", tsvhex);
+	}
+	snprintf(pins->artifact_nvr, sizeof pins->artifact_nvr, "-");
+	if (snprintf(dbpath, sizeof dbpath, "%s/repository.db",
+	             path_repo_dir()) < (int)sizeof dbpath &&
+	    (db = db_open_ro(dbpath, dberr, sizeof dberr)) != NULL) {
+		if (sqlite3_prepare_v2(db,
+		    "SELECT nvr FROM packages WHERE name=?1 AND is_newest=1",
+		    -1, &st, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+			if (sqlite3_step(st) == SQLITE_ROW) {
+				const char *nvr = (const char *)sqlite3_column_text(st, 0);
+				if (nvr)
+					snprintf(pins->artifact_nvr,
+					         sizeof pins->artifact_nvr, "%s", nvr);
+			}
+		}
+		sqlite3_finalize(st);
+		sqlite3_close(db);
+	}
+}
+
+/* Latest record id for (package, check), or 0 when none. */
+static long latest_record(sqlite3 *db, const char *pkg, const char *check) {
+	sqlite3_stmt *st = NULL;
+	long id = 0;
+	if (sqlite3_prepare_v2(db,
+	    "SELECT id FROM policy_records WHERE package=?1 AND check_name=?2"
+	    " ORDER BY id DESC LIMIT 1", -1, &st, NULL) != SQLITE_OK)
+		return 0;
+	sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 2, check, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(st) == SQLITE_ROW)
+		id = (long)sqlite3_column_int64(st, 0);
+	sqlite3_finalize(st);
+	return id;
+}
+
+/* Compare stored pins against live; appends moved-pin reasons.
+ * Returns 1 when current, 0 when stale. */
+static int pins_current(const pins_t *cur, const char *rcommit,
+                        const char *rdigest, const char *gdigest,
+                        const char *nvr, gbuf *why) {
+	int ok = 1;
+	int first = 1;
+	if (!rcommit)
+		rcommit = "";
+	if (!rdigest)
+		rdigest = "";
+	if (!gdigest)
+		gdigest = "";
+	if (!nvr)
+		nvr = "-";
+	if (strcmp(rdigest, cur->recipe_digest) != 0) {
+		gbuf_adds(why, "recipe moved");
+		first = 0;
+		ok = 0;
+	}
+	if (strcmp(gdigest, cur->registry_digest) != 0) {
+		if (!first)
+			gbuf_adds(why, "; ");
+		gbuf_adds(why, "registry moved");
+		first = 0;
+		ok = 0;
+	}
+	if (strcmp(nvr, cur->artifact_nvr) != 0) {
+		if (!first)
+			gbuf_adds(why, "; ");
+		gbuf_adds(why, "artifact moved");
+		ok = 0;
+	}
+	(void)rcommit;
+	(void)first;
+	return ok;
+}
+
+/* ------------------------------------------------------------------ */
+/* package_notes_add                                                   */
+/* ------------------------------------------------------------------ */
+static int t_notes_add(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *pkg, *kind, *title, *body, *aa;
+	char author[CREDIT_CAP + 1], dberr[256], now[21], rcommit[41];
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	int rc;
+	(void)err;
+	(void)errsz;
+	pkg = arg_str(args, "package");
+	kind = arg_str(args, "kind");
+	body = arg_str(args, "body");
+	title = arg_str(args, "title");
+	aa = arg_str(args, "author");
+	if (!pkg || !pkg[0] || !kind || !kind[0] || !body)
+		return -1;
+	if (!title)
+		title = "";
+	if (!kind_valid(kind))
+		return -1;
+	if (strlen(title) > NOTE_TITLE_CAP || strlen(body) > NOTE_BODY_CAP)
+		return -1;
+	if (aa && strlen(aa) > CREDIT_CAP)
+		return -1;
+	resolve_credit(args, author, sizeof author);
+	db = db_open_notes(dberr, sizeof dberr);
+	if (!db) {
+		*is_error = 1;
+		gbuf_adds(text, "journal unavailable: ");
+		gbuf_adds(text, dberr);
+		gbuf_addch(text, '\n');
+		prov(text, "notes.db (local journal)");
+		return 0;
+	}
+	utc_now(now);
+	git_recipe_commit(pkg, rcommit);
+	rc = sqlite3_prepare_v2(db,
+	    "INSERT INTO notes(package,kind,title,body,author,recorder,recipe_commit,created_at)"
+	    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", -1, &st, NULL);
+	if (rc == SQLITE_OK) {
+		sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 2, kind, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 3, title, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 4, body, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 5, author, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 6, journal_recorder, -1, SQLITE_TRANSIENT);
+		if (rcommit[0])
+			sqlite3_bind_text(st, 7, rcommit, -1, SQLITE_TRANSIENT);
+		else
+			sqlite3_bind_null(st, 7);
+		sqlite3_bind_text(st, 8, now, -1, SQLITE_TRANSIENT);
+		rc = sqlite3_step(st);
+	}
+	if (rc == SQLITE_DONE) {
+		char tmp[128];
+		snprintf(tmp, sizeof tmp, "recorded note %lld for ",
+		         (long long)sqlite3_last_insert_rowid(db));
+		gbuf_adds(text, tmp);
+		gbuf_adds(text, pkg);
+		gbuf_adds(text, " [");
+		gbuf_adds(text, kind);
+		gbuf_adds(text, "] by ");
+		gbuf_adds(text, author);
+		gbuf_addch(text, '\n');
+	} else {
+		*is_error = 1;
+		gbuf_adds(text, "journal write failed\n");
+	}
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+	prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* package_notes_get                                                   */
+/* ------------------------------------------------------------------ */
+static int t_notes_get(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *pkg, *kind;
+	long limit;
+	int bad = 0;
+	char dberr[256];
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	int rc, shown = 0;
+	(void)err;
+	(void)errsz;
+	pkg = arg_str(args, "package");
+	kind = arg_str(args, "kind");
+	if (!pkg || !pkg[0])
+		return -1;
+	if (kind && !kind_valid(kind))
+		return -1;
+	limit = clamp_long(arg_long(args, "limit", 20, &bad), 1, 100);
+	if (bad)
+		return -1;
+	db = db_open_notes(dberr, sizeof dberr);
+	if (!db) {
+		*is_error = 1;
+		gbuf_adds(text, "journal unavailable: ");
+		gbuf_adds(text, dberr);
+		gbuf_addch(text, '\n');
+		prov(text, "notes.db (local journal)");
+		return 0;
+	}
+	gbuf_adds(text, "notes for ");
+	gbuf_adds(text, pkg);
+	gbuf_adds(text, ":\n");
+	if (sqlite3_prepare_v2(db,
+	    kind ? "SELECT id,kind,title,body,author,recorder,recipe_commit,created_at"
+	           " FROM notes WHERE package=?1 AND kind=?2 ORDER BY id DESC LIMIT ?3"
+	         : "SELECT id,kind,title,body,author,recorder,recipe_commit,created_at"
+	           " FROM notes WHERE package=?1 ORDER BY id DESC LIMIT ?2",
+	    -1, &st, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+		if (kind) {
+			sqlite3_bind_text(st, 2, kind, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_int(st, 3, (int)limit);
+		} else {
+			sqlite3_bind_int(st, 2, (int)limit);
+		}
+		while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+			char tmp[64];
+			const char *ttl = (const char *)sqlite3_column_text(st, 2);
+			const char *bdy = (const char *)sqlite3_column_text(st, 3);
+			snprintf(tmp, sizeof tmp, "[%lld] ",
+			         (long long)sqlite3_column_int64(st, 0));
+			gbuf_adds(text, tmp);
+			sb_cell(text, st, 1);
+			gbuf_addch(text, ' ');
+			sb_cell(text, st, 7);
+			gbuf_adds(text, " by ");
+			sb_cell(text, st, 4);
+			if (sqlite3_column_type(st, 5) != SQLITE_NULL &&
+			    sqlite3_column_text(st, 5)[0]) {
+				gbuf_adds(text, " recorder=");
+				sb_cell(text, st, 5);
+			}
+			if (sqlite3_column_type(st, 6) != SQLITE_NULL) {
+				gbuf_adds(text, " commit=");
+				sb_cell(text, st, 6);
+			}
+			gbuf_addch(text, '\n');
+			if (ttl && ttl[0]) {
+				gbuf_adds(text, "  title: ");
+				gbuf_adds(text, ttl);
+				gbuf_addch(text, '\n');
+			}
+			if (bdy)
+				indented(text, bdy);
+			shown++;
+		}
+	}
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+	if (!shown)
+		gbuf_adds(text, "(no notes recorded)\n");
+	else {
+		char tmp[64];
+		snprintf(tmp, sizeof tmp, "(showing %d)\n", shown);
+		gbuf_adds(text, tmp);
+	}
+	prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* package_policy_record                                               */
+/* ------------------------------------------------------------------ */
+static int t_policy_record(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *pkg, *check, *result, *aa;
+	jv *ev;
+	char *evcopy = NULL;
+	char author[CREDIT_CAP + 1], dberr[256], now[21];
+	pins_t pins;
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	int rc;
+	long sid;
+	(void)err;
+	(void)errsz;
+	pkg = arg_str(args, "package");
+	check = arg_str(args, "check");
+	result = arg_str(args, "result");
+	aa = arg_str(args, "author");
+	if (!pkg || !pkg[0] || !check || !check[0] || !result)
+		return -1;
+	if (!check_valid(check) || !result_valid(result))
+		return -1;
+	if (aa && strlen(aa) > CREDIT_CAP)
+		return -1;
+	ev = args ? jv_get(args, "evidence") : NULL;
+	if (ev) {
+		if (ev->t != 5 || !ev->raw || ev->rawlen == 0 ||
+		    ev->rawlen > EVIDENCE_CAP)
+			return -1;
+		evcopy = malloc(ev->rawlen + 1);
+		if (!evcopy)
+			return -1;
+		memcpy(evcopy, ev->raw, ev->rawlen);
+		evcopy[ev->rawlen] = 0;
+	}
+	resolve_credit(args, author, sizeof author);
+	current_pins(pkg, &pins);
+	db = db_open_notes(dberr, sizeof dberr);
+	if (!db) {
+		free(evcopy);
+		*is_error = 1;
+		gbuf_adds(text, "journal unavailable: ");
+		gbuf_adds(text, dberr);
+		gbuf_addch(text, '\n');
+		prov(text, "notes.db (local journal)");
+		return 0;
+	}
+	sid = latest_record(db, pkg, check);
+	utc_now(now);
+	rc = sqlite3_prepare_v2(db,
+	    "INSERT INTO policy_records(package,check_name,result,recipe_commit,"
+	    "recipe_digest,registry_digest,artifact_nvr,evidence_json,author,"
+	    "recorder,created_at,supersedes_id)"
+	    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", -1, &st, NULL);
+	if (rc == SQLITE_OK) {
+		sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 2, check, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 3, result, -1, SQLITE_TRANSIENT);
+		if (pins.recipe_commit[0])
+			sqlite3_bind_text(st, 4, pins.recipe_commit, -1, SQLITE_TRANSIENT);
+		else
+			sqlite3_bind_null(st, 4);
+		sqlite3_bind_text(st, 5, pins.recipe_digest, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 6, pins.registry_digest, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 7, pins.artifact_nvr, -1, SQLITE_TRANSIENT);
+		if (evcopy)
+			sqlite3_bind_text(st, 8, evcopy, -1, SQLITE_TRANSIENT);
+		else
+			sqlite3_bind_null(st, 8);
+		sqlite3_bind_text(st, 9, author, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 10, journal_recorder, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 11, now, -1, SQLITE_TRANSIENT);
+		if (sid > 0)
+			sqlite3_bind_int64(st, 12, (long long)sid);
+		else
+			sqlite3_bind_null(st, 12);
+		rc = sqlite3_step(st);
+	}
+	free(evcopy);
+	if (rc == SQLITE_DONE) {
+		char tmp[192];
+		if (sid > 0)
+			snprintf(tmp, sizeof tmp, "recorded %s=%s for %s (record %lld, supersedes %ld)",
+			         check, result, pkg,
+			         (long long)sqlite3_last_insert_rowid(db), sid);
+		else
+			snprintf(tmp, sizeof tmp, "recorded %s=%s for %s (record %lld, first record)",
+			         check, result, pkg,
+			         (long long)sqlite3_last_insert_rowid(db));
+		gbuf_adds(text, tmp);
+		gbuf_addch(text, '\n');
+	} else {
+		*is_error = 1;
+		gbuf_adds(text, "journal write failed\n");
+	}
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+	prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* Print one check's latest record with freshness, for status/readiness. */
+static void print_check(sqlite3 *db, const char *pkg, const char *check,
+                        const pins_t *cur, gbuf *text, int *have,
+                        int *current, int *stale) {
+	sqlite3_stmt *st = NULL;
+	*have = 0;
+	*current = 0;
+	*stale = 0;
+	if (sqlite3_prepare_v2(db,
+	    "SELECT id,result,author,recorder,recipe_commit,recipe_digest,"
+	    "registry_digest,artifact_nvr,evidence_json,created_at"
+	    " FROM policy_records WHERE package=?1 AND check_name=?2"
+	    " ORDER BY id DESC LIMIT 1", -1, &st, NULL) != SQLITE_OK)
+		return;
+	sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 2, check, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(st) == SQLITE_ROW) {
+		gbuf why;
+		const char *rcommit = (const char *)sqlite3_column_text(st, 4);
+		const char *rdigest = (const char *)sqlite3_column_text(st, 5);
+		const char *gdigest = (const char *)sqlite3_column_text(st, 6);
+		const char *nvr = (const char *)sqlite3_column_text(st, 7);
+		char tmp[256];
+		*have = 1;
+		gbuf_init(&why);
+		if (pins_current(cur, rcommit, rdigest, gdigest, nvr, &why)) {
+			*current = 1;
+			snprintf(tmp, sizeof tmp, "%s: %s CURRENT (record %lld, %s by %s",
+			         check, sqlite3_column_text(st, 1),
+			         (long long)sqlite3_column_int64(st, 0),
+			         sqlite3_column_text(st, 9),
+			         sqlite3_column_text(st, 2));
+		} else {
+			*stale = 1;
+			snprintf(tmp, sizeof tmp, "%s: %s STALE (record %lld; %s",
+			         check, sqlite3_column_text(st, 1),
+			         (long long)sqlite3_column_int64(st, 0),
+			         why.p ? why.p : "pins moved");
+		}
+		gbuf_adds(text, tmp);
+		if (rcommit && rcommit[0]) {
+			char sh[9];
+			memcpy(sh, rcommit, 7);
+			sh[7] = 0;
+			gbuf_adds(text, ", commit ");
+			gbuf_adds(text, sh);
+		}
+		gbuf_adds(text, ")\n");
+		if (!*current && !*stale) {
+			gbuf_free(&why);
+			sqlite3_finalize(st);
+			return;
+		}
+		if (sqlite3_column_type(st, 8) != SQLITE_NULL) {
+			gbuf_adds(text, "  evidence: ");
+			sb_cell(text, st, 8);
+			gbuf_addch(text, '\n');
+		}
+		gbuf_free(&why);
+	}
+	sqlite3_finalize(st);
+}
+
+/* ------------------------------------------------------------------ */
+/* package_policy_status                                               */
+/* ------------------------------------------------------------------ */
+static int t_policy_status(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *pkg;
+	char dberr[256];
+	sqlite3 *db = NULL;
+	pins_t pins;
+	int i;
+	(void)err;
+	(void)errsz;
+	pkg = arg_str(args, "package");
+	if (!pkg || !pkg[0])
+		return -1;
+	db = db_open_notes(dberr, sizeof dberr);
+	if (!db) {
+		*is_error = 1;
+		gbuf_adds(text, "journal unavailable: ");
+		gbuf_adds(text, dberr);
+		gbuf_addch(text, '\n');
+		prov(text, "notes.db (local journal)");
+		return 0;
+	}
+	current_pins(pkg, &pins);
+	gbuf_adds(text, "policy status for ");
+	gbuf_adds(text, pkg);
+	gbuf_adds(text, ":\n");
+	for (i = 0; policy_checks[i]; i++) {
+		int have = 0, current = 0, stale = 0;
+		print_check(db, pkg, policy_checks[i], &pins, text,
+		            &have, &current, &stale);
+		if (!have) {
+			gbuf_adds(text, policy_checks[i]);
+			gbuf_adds(text, ": UNVERIFIED (no record)\n");
+		}
+	}
+	sqlite3_close(db);
+	prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* package_readiness                                                   */
+/* ------------------------------------------------------------------ */
+static int t_readiness(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *pkg;
+	char dberr[256];
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	pins_t pins;
+	int i, first;
+	long nnotes = 0, nissues = 0;
+	(void)err;
+	(void)errsz;
+	pkg = arg_str(args, "package");
+	if (!pkg || !pkg[0])
+		return -1;
+	db = db_open_notes(dberr, sizeof dberr);
+	if (!db) {
+		*is_error = 1;
+		gbuf_adds(text, "journal unavailable: ");
+		gbuf_adds(text, dberr);
+		gbuf_addch(text, '\n');
+		prov(text, "notes.db (local journal)");
+		return 0;
+	}
+	current_pins(pkg, &pins);
+	gbuf_adds(text, "readiness for ");
+	gbuf_adds(text, pkg);
+	gbuf_adds(text, ":\nverified (current):\n");
+	first = 1;
+	for (i = 0; policy_checks[i]; i++) {
+		int have = 0, current = 0, stale = 0;
+		gbuf row;
+		gbuf_init(&row);
+		print_check(db, pkg, policy_checks[i], &pins, &row,
+		            &have, &current, &stale);
+		if (have && current) {
+			gbuf_adds(text, "  ");
+			gbuf_adds(text, row.p ? row.p : "");
+			first = 0;
+		}
+		gbuf_free(&row);
+	}
+	if (first)
+		gbuf_adds(text, "  (none)\n");
+	gbuf_adds(text, "stale (needs revalidation):\n");
+	first = 1;
+	for (i = 0; policy_checks[i]; i++) {
+		int have = 0, current = 0, stale = 0;
+		gbuf row;
+		gbuf_init(&row);
+		print_check(db, pkg, policy_checks[i], &pins, &row,
+		            &have, &current, &stale);
+		if (have && stale) {
+			gbuf_adds(text, "  ");
+			gbuf_adds(text, row.p ? row.p : "");
+			first = 0;
+		}
+		gbuf_free(&row);
+	}
+	if (first)
+		gbuf_adds(text, "  (none)\n");
+	gbuf_adds(text, "unverified:\n  ");
+	first = 1;
+	for (i = 0; policy_checks[i]; i++) {
+		int have = 0, current = 0, stale = 0;
+		gbuf row;
+		gbuf_init(&row);
+		print_check(db, pkg, policy_checks[i], &pins, &row,
+		            &have, &current, &stale);
+		gbuf_free(&row);
+		if (!have) {
+			if (!first)
+				gbuf_adds(text, ", ");
+			gbuf_adds(text, policy_checks[i]);
+			first = 0;
+		}
+	}
+	if (first)
+		gbuf_adds(text, "(none - every check has evidence)");
+	gbuf_addch(text, '\n');
+	if (sqlite3_prepare_v2(db,
+	    "SELECT COUNT(*),SUM(CASE WHEN kind='issue' THEN 1 ELSE 0 END)"
+	    " FROM notes WHERE package=?1", -1, &st, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(st) == SQLITE_ROW) {
+			nnotes = (long)sqlite3_column_int64(st, 0);
+			nissues = (long)sqlite3_column_int64(st, 1);
+		}
+	}
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+	{
+		char tmp[128];
+		snprintf(tmp, sizeof tmp, "notes: %ld (%ld open issue%s)\n",
+		         nnotes, nissues, nissues == 1 ? "" : "s");
+		gbuf_adds(text, tmp);
+	}
+	prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* dispatch                                                            */
 /* ------------------------------------------------------------------ */
 int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
@@ -2401,6 +3148,16 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
 		return t_queue(args, text, is_error, err, sizeof err);
 	if (strcmp(name, "package_identity") == 0)
 		return t_identity(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "package_notes_get") == 0)
+		return t_notes_get(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "package_notes_add") == 0)
+		return t_notes_add(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "package_policy_status") == 0)
+		return t_policy_status(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "package_policy_record") == 0)
+		return t_policy_record(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "package_readiness") == 0)
+		return t_readiness(args, text, is_error, err, sizeof err);
 	return -1;
 }
 

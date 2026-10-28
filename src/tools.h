@@ -10,4 +10,9 @@
  * names (caller maps to -32602). text is always NUL-terminated. */
 int tools_call(const char *name, jv *args, gbuf *text, int *is_error);
 
+/* Recorder identity for journal attribution: MCP clientInfo
+ * name/version, captured per connection. Client-reported and
+ * unverified - attribution, never authentication. */
+void sbm_set_recorder(const char *recorder);
+
 #endif

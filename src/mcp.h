@@ -11,8 +11,9 @@
 #define SBM_MAX_OUTPUT_FILE_BYTES (2u * 1024u * 1024u)
 
 /* Static tools/list result: descriptions and schemas stay minimal.
- * Eleven read-only tools. No submit, bump, sign, publish, install
- * or restart surface exists by design, not by omission. */
+ * Fourteen read-only tools plus two journal-scoped writes (notes.db
+ * only - no recipe, queue, revision, signing, publish, install or
+ * restart surface exists by design, not by omission). */
 #define SBM_TOOLS_LIST_JSON \
 	"{\"tools\":[" \
 	"{\"name\":\"package_search\",\"description\":\"Find packages by name or description substring.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"},\"include_disabled\":{\"type\":\"boolean\"}},\"required\":[\"query\"]}}," \
@@ -25,7 +26,12 @@
 	"{\"name\":\"package_build_log\",\"description\":\"Retained build/install log tail.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"stage\":{\"type\":\"string\",\"enum\":[\"build\",\"install\",\"both\"]},\"tail_bytes\":{\"type\":\"number\"}},\"required\":[\"name\"]}}," \
 	"{\"name\":\"package_artifacts\",\"description\":\"Staged, signed and published artifacts.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}," \
 	"{\"name\":\"build_queue\",\"description\":\"Queued and active builds.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"limit\":{\"type\":\"number\"}}}}," \
-	"{\"name\":\"package_identity\",\"description\":\"Unix identity: fragment, registry, reservations, live accounts.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}" \
+	"{\"name\":\"package_identity\",\"description\":\"Unix identity: fragment, registry, reservations, live accounts.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}," \
+	"{\"name\":\"package_notes_get\",\"description\":\"Read engineering notes for a package (newest first).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\",\"enum\":[\"finding\",\"decision\",\"issue\"]},\"limit\":{\"type\":\"number\"}},\"required\":[\"package\"]}}," \
+	"{\"name\":\"package_notes_add\",\"description\":\"Record an engineering finding, decision or open issue (journal only).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\",\"enum\":[\"finding\",\"decision\",\"issue\"]},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"kind\",\"body\"]}}," \
+	"{\"name\":\"package_policy_status\",\"description\":\"Policy checks with evidence and freshness for a package.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}," \
+	"{\"name\":\"package_policy_record\",\"description\":\"Attach verified evidence to a policy check (journal only).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"check\":{\"type\":\"string\",\"enum\":[\"unix-identity\",\"payload-layout\",\"revision-discipline\",\"dependency-closure\",\"signing-acceptance\"]},\"result\":{\"type\":\"string\",\"enum\":[\"PASS\",\"FAIL\"]},\"evidence\":{\"type\":\"object\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"check\",\"result\"]}}," \
+	"{\"name\":\"package_readiness\",\"description\":\"What is verified, stale, unverified, plus open issues.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}" \
 	"]}"
 
 int run_stdio(void);

@@ -19,6 +19,7 @@ export SBM_PASSWD="$FIX/passwd"
 export SBM_GROUP="$FIX/group"
 export SBM_APKDB="$FIX/installed.db"
 export SBM_TESTFIX="$FIX"
+export SBM_NOTES_DB="$FIX/notes.db"
 export PATH="$FIX/bin:$PATH"
 
 pass=0
@@ -189,7 +190,7 @@ t_contains "initialize names server" "$out" '"name":"saphira-build-mcp"'
 out=$(mcp '{"jsonrpc":"2.0","id":2,"method":"ping"}')
 t_contains "ping empty result" "$out" '"result":{}'
 out=$(mcp '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')
-for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity; do
+for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness; do
 	t_contains "tools/list has $tool" "$out" "\"name\":\"$tool\""
 done
 out=$(mcp '{"jsonrpc":"2.0","id":4,"method":"nope"}')
@@ -252,6 +253,57 @@ out=$(mcp '{"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"pack
 t_contains "identity reservations" "$out" "owned by pkg-a"
 t_contains "identity live user" "$out" "uid=150"
 t_contains "identity registry" "$out" "pkguser"
+
+# --- evidence journal (Egg-local notes.db; fixtures override it) --------
+export SBM_AUTHOR=test-agent
+# The journal must never live in the recipe tree: the server maintains
+# its own tables, and fixtures point it at scratch (live default is
+# /var/lib/saphira-build/notes.db on Egg, never /recipes).
+t "journal path is fixture scratch" "$SBM_NOTES_DB" "$FIX/notes.db" "$FIX/notes.db"
+out=$(mcp '{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"finding","title":"deps verified","body":"pkg-c edge confirmed via apk dot"}}}' )
+t_contains "notes add recorded" "$out" "recorded note 1 for pkg-a"
+t_contains "notes add author default" "$out" "by test-agent"
+out=$(mcp '{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"issue","body":"libfoo unresolved","author":"ada"}}}' )
+t_contains "notes add author override" "$out" "by ada"
+# recorder comes from initialize clientInfo in the same connection
+out=$(mcp '{"jsonrpc":"2.0","id":42,"method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"opencode","version":"9.9"}}}' '{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"decision","body":"keep libfoo unresolved"}}}' )
+t_contains "notes add with recorder" "$out" "recorded note 3 for pkg-a"
+out=$(mcp '{"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"package_notes_get","arguments":{"package":"pkg-a"}}}')
+t_contains "notes get newest" "$out" "keep libfoo unresolved"
+t_contains "notes get recorder" "$out" "recorder=opencode/9.9"
+t_contains "notes get count" "$out" "(showing 3)"
+out=$(mcp '{"jsonrpc":"2.0","id":45,"method":"tools/call","params":{"name":"package_policy_record","arguments":{"package":"pkg-a","check":"unix-identity","result":"PASS","evidence":{"accounts_fragment_in_payload":true,"uid_gid_registered":true}}}}')
+t_contains "policy record stored" "$out" "recorded unix-identity=PASS for pkg-a (record 1, first record)"
+out=$(mcp '{"jsonrpc":"2.0","id":46,"method":"tools/call","params":{"name":"package_policy_status","arguments":{"package":"pkg-a"}}}')
+t_contains "policy status current" "$out" "unix-identity: PASS CURRENT"
+t_contains "policy status unverified" "$out" "payload-layout: UNVERIFIED (no record)"
+out=$(mcp '{"jsonrpc":"2.0","id":47,"method":"tools/call","params":{"name":"package_readiness","arguments":{"package":"pkg-a"}}}')
+t_contains "readiness verified" "$out" "unix-identity: PASS CURRENT"
+t_contains "readiness notes" "$out" "notes: 3 (1 open issue)"
+# evidence freshness: touch the recipe, the PASS must go stale
+printf '# journal staleness probe\n' >> "$FIX/recipes/pkg-a/recipe.sh"
+out=$(mcp '{"jsonrpc":"2.0","id":48,"method":"tools/call","params":{"name":"package_policy_status","arguments":{"package":"pkg-a"}}}')
+t_contains "policy status stale" "$out" "unix-identity: PASS STALE"
+t_contains "policy stale reason" "$out" "recipe moved"
+out=$(mcp '{"jsonrpc":"2.0","id":49,"method":"tools/call","params":{"name":"package_readiness","arguments":{"package":"pkg-a"}}}')
+t_contains "readiness stale bucket" "$out" "stale (needs revalidation)"
+# supersede: a fresh record replaces the stale one, history preserved
+n_before=$(sqlite3 "$FIX/notes.db" "SELECT COUNT(*) FROM policy_records;")
+out=$(mcp '{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"package_policy_record","arguments":{"package":"pkg-a","check":"unix-identity","result":"PASS","evidence":{"rechecked":true}}}}')
+t_contains "policy record supersedes" "$out" "(record 2, supersedes 1)"
+n_after=$(sqlite3 "$FIX/notes.db" "SELECT COUNT(*) FROM policy_records;")
+t "journal append-only" "$n_after" "$((n_before + 1))" "$((n_before + 1))"
+out=$(mcp '{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"package_policy_status","arguments":{"package":"pkg-a"}}}')
+t_contains "policy status current again" "$out" "unix-identity: PASS CURRENT"
+t_contains "policy status newest record" "$out" "(record 2,"
+# invalid inputs are transport errors, never journal writes
+out=$(mcp '{"jsonrpc":"2.0","id":52,"method":"tools/call","params":{"name":"package_policy_record","arguments":{"package":"pkg-a","check":"no-such-check","result":"PASS"}}}')
+t_contains "policy bad check -32602" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":53,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"nope","body":"x"}}}')
+t_contains "notes bad kind -32602" "$out" '"code":-32602'
+big=$(python3 -c "print('x' * 5000)")
+out=$(mcp '{"jsonrpc":"2.0","id":54,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"finding","body":"'"$big"'"}}}')
+t_contains "notes oversize body -32602" "$out" '"code":-32602'
 
 # --- framing: every stdout line is valid JSON ---------------------------
 mcp '{"jsonrpc":"2.0","id":30,"method":"tools/list"}' '{"jsonrpc":"2.0","id":31,"method":"ping"}' > "$ROOT/frames.txt"

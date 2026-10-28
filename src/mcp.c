@@ -76,8 +76,28 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		jv *params = jv_get(root, "params");
 		if (params) {
 			jv *p = jv_get(params, "protocolVersion");
+			jv *ci = jv_get(params, "clientInfo");
 			if (p && p->str)
 				pv = p->str;
+			/* Recorder identity for journal attribution:
+			 * clientInfo is client-reported metadata, kept
+			 * verbatim and never trusted for decisions. */
+			if (ci && ci->t == 5) {
+				jv *cn = jv_get(ci, "name");
+				jv *cv = jv_get(ci, "version");
+				char rec[128];
+				if (cn && cn->str && cn->str[0] && cv && cv->str && cv->str[0])
+					snprintf(rec, sizeof rec, "%s/%s", cn->str, cv->str);
+				else if (cn && cn->str && cn->str[0])
+					snprintf(rec, sizeof rec, "%s", cn->str);
+				else
+					rec[0] = 0;
+				sbm_set_recorder(rec);
+			} else {
+				sbm_set_recorder("");
+			}
+		} else {
+			sbm_set_recorder("");
 		}
 		gbuf r;
 		gbuf_init(&r);
