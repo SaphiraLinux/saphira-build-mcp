@@ -3606,6 +3606,8 @@ static int t_package_bump(jv *args, gbuf *text, int *is_error, char *err, size_t
 /* ------------------------------------------------------------------ */
 #define CHECKPOINT_LABEL_CAP 64
 #define CHECKPOINT_BODY_CAP 16384
+#define CHECKPOINT_PROJECT_CAP 64
+#define CHECKPOINT_WORKSTREAM_CAP 64
 
 /* A checkpoint is a pre-restart write meant to be consumed post-restart:
  * "resume from checkpoint <id|label>" must restore exactly what the
@@ -3625,7 +3627,7 @@ static int is_hex40(const char *s) {
 }
 
 static int t_checkpoint_save(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
-	const char *label, *title, *body, *pkg, *aa, *src, *rcp;
+	const char *label, *title, *body, *pkg, *aa, *src, *rcp, *proj, *ws;
 	char author[CREDIT_CAP + 1], dberr[256], now[21];
 	sqlite3 *db = NULL;
 	sqlite3_stmt *st = NULL;
@@ -3639,14 +3641,23 @@ static int t_checkpoint_save(jv *args, gbuf *text, int *is_error, char *err, siz
 	aa = arg_str(args, "author");
 	src = arg_str(args, "src_commit");
 	rcp = arg_str(args, "recipe_commit");
+	proj = arg_str(args, "project");
+	ws = arg_str(args, "workstream");
 	if (!label || !label[0] || !body)
 		return -1;
 	if (!title)
 		title = "";
 	if (!pkg)
 		pkg = "";
+	if (!proj)
+		proj = "";
+	if (!ws)
+		ws = "";
 	if (strlen(label) > CHECKPOINT_LABEL_CAP ||
 	    strlen(title) > NOTE_TITLE_CAP || strlen(body) > CHECKPOINT_BODY_CAP)
+		return -1;
+	if (strlen(proj) > CHECKPOINT_PROJECT_CAP ||
+	    strlen(ws) > CHECKPOINT_WORKSTREAM_CAP)
 		return -1;
 	if (aa && strlen(aa) > CREDIT_CAP)
 		return -1;
@@ -3667,8 +3678,8 @@ static int t_checkpoint_save(jv *args, gbuf *text, int *is_error, char *err, siz
 	utc_now(now);
 	rc = sqlite3_prepare_v2(db,
 	    "INSERT INTO checkpoints(label,package,title,body,author,recorder,"
-	    "src_commit,recipe_commit,created_at)"
-	    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", -1, &st, NULL);
+	    "src_commit,recipe_commit,created_at,status,project,workstream)"
+	    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',?10,?11)", -1, &st, NULL);
 	if (rc == SQLITE_OK) {
 		sqlite3_bind_text(st, 1, label, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 2, pkg, -1, SQLITE_TRANSIENT);
@@ -3685,6 +3696,8 @@ static int t_checkpoint_save(jv *args, gbuf *text, int *is_error, char *err, siz
 		else
 			sqlite3_bind_null(st, 8);
 		sqlite3_bind_text(st, 9, now, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 10, proj, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 11, ws, -1, SQLITE_TRANSIENT);
 		rc = sqlite3_step(st);
 	}
 	if (rc == SQLITE_DONE) {
@@ -3737,6 +3750,44 @@ static void print_checkpoint(gbuf *text, sqlite3_stmt *st) {
 		gbuf_adds(text, (const char *)sqlite3_column_text(st, 3));
 		gbuf_addch(text, '\n');
 	}
+	/* Columns 10-14 are v2 (0.7.0). A legacy row predating the
+	 * register reads as active with no project/workstream: work
+	 * written before statuses existed is unfinished by definition. */
+	if (sqlite3_column_count(st) > 10 &&
+	    sqlite3_column_type(st, 10) != SQLITE_NULL) {
+		gbuf_adds(text, "  status: ");
+		sb_cell(text, st, 10);
+		gbuf_addch(text, '\n');
+	} else {
+		gbuf_adds(text, "  status: active\n");
+	}
+	if (sqlite3_column_count(st) > 11 &&
+	    sqlite3_column_type(st, 11) != SQLITE_NULL &&
+	    sqlite3_column_text(st, 11)[0]) {
+		gbuf_adds(text, "  project: ");
+		sb_cell(text, st, 11);
+		gbuf_addch(text, '\n');
+	}
+	if (sqlite3_column_count(st) > 12 &&
+	    sqlite3_column_type(st, 12) != SQLITE_NULL &&
+	    sqlite3_column_text(st, 12)[0]) {
+		gbuf_adds(text, "  workstream: ");
+		sb_cell(text, st, 12);
+		gbuf_addch(text, '\n');
+	}
+	if (sqlite3_column_count(st) > 13 &&
+	    sqlite3_column_type(st, 13) != SQLITE_NULL &&
+	    sqlite3_column_text(st, 13)[0]) {
+		gbuf_adds(text, "  closed: ");
+		sb_cell(text, st, 13);
+		if (sqlite3_column_count(st) > 14 &&
+		    sqlite3_column_type(st, 14) != SQLITE_NULL &&
+		    sqlite3_column_text(st, 14)[0]) {
+			gbuf_adds(text, " by ");
+			sb_cell(text, st, 14);
+		}
+		gbuf_addch(text, '\n');
+	}
 	if (sqlite3_column_type(st, 7) != SQLITE_NULL) {
 		gbuf_adds(text, "  src_commit: ");
 		sb_cell(text, st, 7);
@@ -3777,11 +3828,16 @@ static int t_checkpoint_resume(jv *args, gbuf *text, int *is_error, char *err, s
 		return 0;
 	}
 	/* Columns: 0 id, 1 label, 2 package, 3 title, 4 body, 5 author,
-	 * 6 recorder, 7 src_commit, 8 created_at, 9 recipe_commit. */
+	 * 6 recorder, 7 src_commit, 8 created_at, 9 recipe_commit,
+	 * 10 status, 11 project, 12 workstream, 13 closed_at,
+	 * 14 closed_by. Resume never filters on status: a closed
+	 * checkpoint stays consumable by id (history is never
+	 * deleted); the active register lives in checkpoint_list. */
 	if (id != -1) {
 		rc = sqlite3_prepare_v2(db,
 		    "SELECT id,label,package,title,body,author,recorder,"
-		    "src_commit,created_at,recipe_commit"
+		    "src_commit,created_at,recipe_commit,"
+		    "status,project,workstream,closed_at,closed_by"
 		    " FROM checkpoints WHERE id=?1", -1, &st, NULL);
 		if (rc == SQLITE_OK) {
 			sqlite3_bind_int64(st, 1, (long long)id);
@@ -3797,7 +3853,8 @@ static int t_checkpoint_resume(jv *args, gbuf *text, int *is_error, char *err, s
 	} else if (label && label[0]) {
 		rc = sqlite3_prepare_v2(db,
 		    "SELECT id,label,package,title,body,author,recorder,"
-		    "src_commit,created_at,recipe_commit"
+		    "src_commit,created_at,recipe_commit,"
+		    "status,project,workstream,closed_at,closed_by"
 		    " FROM checkpoints WHERE label=?1 ORDER BY id DESC LIMIT 1",
 		    -1, &st, NULL);
 		if (rc == SQLITE_OK) {
@@ -3814,7 +3871,8 @@ static int t_checkpoint_resume(jv *args, gbuf *text, int *is_error, char *err, s
 	} else {
 		rc = sqlite3_prepare_v2(db,
 		    "SELECT id,label,package,title,body,author,recorder,"
-		    "src_commit,created_at,recipe_commit"
+		    "src_commit,created_at,recipe_commit,"
+		    "status,project,workstream,closed_at,closed_by"
 		    " FROM checkpoints ORDER BY id DESC LIMIT 1",
 		    -1, &st, NULL);
 		if (rc == SQLITE_OK) {
@@ -3832,6 +3890,371 @@ static int t_checkpoint_resume(jv *args, gbuf *text, int *is_error, char *err, s
 	if (text->failed)
 		return -1;
 	return 0;
+}
+
+/* checkpoint_list: the active register. Preview, not consumption:
+ * one line per checkpoint (id, status, label, project/workstream,
+ * title, author, age), newest first, plus the matching total so a
+ * capped page never hides the size of the backlog. Closed work is
+ * hidden by default; status=closed|all (or include_closed) reveals
+ * it. Closing never deletes: checkpoint_resume by id still serves
+ * closed rows in full. */
+#define CHECKPOINT_LIST_DEFAULT 20
+#define CHECKPOINT_LIST_MAX 100
+
+static int t_checkpoint_list(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *status, *proj, *ws, *label;
+	long limit, total = 0;
+	int bad = 0, inc, explicit_status, n = 0, nw;
+	char dberr[256], where[448], tmp[256];
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	int all, closed_only;
+	(void)err;
+	(void)errsz;
+	explicit_status = args && jv_get(args, "status") ? 1 : 0;
+	status = arg_str(args, "status");
+	if (!status)
+		status = "active";
+	if (strcmp(status, "active") != 0 && strcmp(status, "closed") != 0 &&
+	    strcmp(status, "all") != 0)
+		return -1;
+	inc = arg_bool(args, "include_closed", 0);
+	if (inc < 0)
+		return -1;
+	if (inc && explicit_status && strcmp(status, "active") == 0)
+		return -1; /* contradictory filters fail closed */
+	if (inc && !explicit_status)
+		status = "all";
+	proj = arg_str(args, "project");
+	ws = arg_str(args, "workstream");
+	label = arg_str(args, "label");
+	if (proj && strlen(proj) > CHECKPOINT_PROJECT_CAP)
+		return -1;
+	if (ws && strlen(ws) > CHECKPOINT_WORKSTREAM_CAP)
+		return -1;
+	if (label && strlen(label) > CHECKPOINT_LABEL_CAP)
+		return -1;
+	limit = arg_long(args, "limit", CHECKPOINT_LIST_DEFAULT, &bad);
+	if (bad)
+		return -1;
+	limit = clamp_long(limit, 1, CHECKPOINT_LIST_MAX);
+	all = strcmp(status, "all") == 0;
+	closed_only = strcmp(status, "closed") == 0;
+	db = db_open_notes(dberr, sizeof dberr);
+	if (!db) {
+		*is_error = 1;
+		gbuf_adds(text, "journal unavailable: ");
+		gbuf_adds(text, dberr);
+		gbuf_addch(text, '\n');
+		prov(text, "notes.db (local journal)");
+		return 0;
+	}
+	snprintf(where, sizeof where, "%s%s%s%s",
+	    all ? "1=1" : (closed_only ? "status='closed'" : "status='active'"),
+	    proj && proj[0] ? " AND project=?1" : "",
+	    ws && ws[0] ? " AND workstream=?2" : "",
+	    label && label[0] ? " AND label=?3" : "");
+	nw = snprintf(tmp, sizeof tmp,
+	    "SELECT COUNT(*) FROM checkpoints WHERE %s", where);
+	if (nw < 0 || nw >= (int)sizeof tmp)
+		return -1; /* filter text cannot overflow: fail loudly */
+	if (sqlite3_prepare_v2(db, tmp, -1, &st, NULL) == SQLITE_OK) {
+		int bi = 1;
+		if (proj && proj[0])
+			sqlite3_bind_text(st, bi++, proj, -1, SQLITE_TRANSIENT);
+		if (ws && ws[0])
+			sqlite3_bind_text(st, bi++, ws, -1, SQLITE_TRANSIENT);
+		if (label && label[0])
+			sqlite3_bind_text(st, bi++, label, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(st) == SQLITE_ROW)
+			total = (long)sqlite3_column_int64(st, 0);
+	}
+	sqlite3_finalize(st);
+	st = NULL;
+	nw = snprintf(tmp, sizeof tmp,
+	    "SELECT id,label,project,workstream,title,author,status,created_at"
+	    " FROM checkpoints WHERE %s ORDER BY id DESC LIMIT %ld",
+	    where, limit);
+	if (nw < 0 || nw >= (int)sizeof tmp)
+		return -1;
+	if (sqlite3_prepare_v2(db, tmp, -1, &st, NULL) == SQLITE_OK) {
+		int bi = 1;
+		if (proj && proj[0])
+			sqlite3_bind_text(st, bi++, proj, -1, SQLITE_TRANSIENT);
+		if (ws && ws[0])
+			sqlite3_bind_text(st, bi++, ws, -1, SQLITE_TRANSIENT);
+		if (label && label[0])
+			sqlite3_bind_text(st, bi++, label, -1, SQLITE_TRANSIENT);
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			const unsigned char *l, *p, *w, *t, *a, *s, *c;
+			n++;
+			gbuf_adds(text, "  [");
+			sb_cell(text, st, 0);
+			gbuf_adds(text, "]");
+			s = sqlite3_column_text(st, 6);
+			if (s && strcmp((const char *)s, "active") != 0) {
+				gbuf_adds(text, " (");
+				gbuf_adds(text, (const char *)s);
+				gbuf_adds(text, ")");
+			}
+			l = sqlite3_column_text(st, 1);
+			gbuf_adds(text, " label '");
+			gbuf_adds(text, l ? (const char *)l : "");
+			gbuf_adds(text, "'");
+			p = sqlite3_column_text(st, 2);
+			if (p && p[0]) {
+				gbuf_adds(text, " project '");
+				gbuf_adds(text, (const char *)p);
+				gbuf_adds(text, "'");
+			}
+			w = sqlite3_column_text(st, 3);
+			if (w && w[0]) {
+				gbuf_adds(text, " workstream '");
+				gbuf_adds(text, (const char *)w);
+				gbuf_adds(text, "'");
+			}
+			t = sqlite3_column_text(st, 4);
+			if (t && t[0]) {
+				gbuf_adds(text, " '");
+				gbuf_adds(text, (const char *)t);
+				gbuf_adds(text, "'");
+			}
+			a = sqlite3_column_text(st, 5);
+			gbuf_adds(text, " by ");
+			gbuf_adds(text, a ? (const char *)a : "-");
+			c = sqlite3_column_text(st, 7);
+			gbuf_adds(text, " at ");
+			gbuf_adds(text, c ? (const char *)c : "-");
+			gbuf_addch(text, '\n');
+		}
+	}
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+	if (n == 0) {
+		if (all)
+			gbuf_adds(text, "(no checkpoints recorded)\n");
+		else {
+			snprintf(tmp, sizeof tmp, "(no %s checkpoints)\n", status);
+			gbuf_adds(text, tmp);
+		}
+	} else {
+		snprintf(tmp, sizeof tmp, "%s checkpoints: %ld total (showing %d)\n",
+		    all ? "all" : status, total, n);
+		/* Header belongs first: prepend by rebuilding. The page
+		 * is tiny (limit <= 100 short rows), so one copy is fine. */
+		gbuf head;
+		gbuf_init(&head);
+		gbuf_adds(&head, tmp);
+		if (text->p)
+			gbuf_addn(&head, text->p, text->len);
+		gbuf_free(text);
+		*text = head;
+	}
+	prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* checkpoint_close: retire finished work from the active register.
+ * Sets status (never deletes: the row stays resumable by id).
+ * Idempotent: closing a closed checkpoint reports its state. */
+static int t_checkpoint_close(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	long id;
+	int bad = 0;
+	char author[CREDIT_CAP + 1], closer[CREDIT_CAP + 1];
+	char dberr[256], now[21], tmp[192];
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	int rc, found = 0;
+	(void)err;
+	(void)errsz;
+	id = arg_long(args, "id", -1, &bad);
+	if (bad || id <= 0)
+		return -1;
+	resolve_credit(args, author, sizeof author);
+	snprintf(closer, sizeof closer, "%s", author);
+	db = db_open_notes(dberr, sizeof dberr);
+	if (!db) {
+		*is_error = 1;
+		gbuf_adds(text, "journal unavailable: ");
+		gbuf_adds(text, dberr);
+		gbuf_addch(text, '\n');
+		prov(text, "notes.db (local journal)");
+		return 0;
+	}
+	rc = sqlite3_prepare_v2(db,
+	    "SELECT id,label,status FROM checkpoints WHERE id=?1", -1, &st, NULL);
+	if (rc == SQLITE_OK) {
+		sqlite3_bind_int64(st, 1, (long long)id);
+		if (sqlite3_step(st) == SQLITE_ROW)
+			found = 1;
+	}
+	if (!found) {
+		snprintf(tmp, sizeof tmp, "no such checkpoint %ld\n", id);
+		*is_error = 1;
+		gbuf_adds(text, tmp);
+		sqlite3_finalize(st);
+		sqlite3_close(db);
+		prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+		return 0;
+	}
+	{
+		const unsigned char *s = sqlite3_column_text(st, 2);
+		const unsigned char *l = sqlite3_column_text(st, 1);
+		char label[CHECKPOINT_LABEL_CAP + 1];
+		int already = s && strcmp((const char *)s, "closed") == 0;
+		snprintf(label, sizeof label, "%s", l ? (const char *)l : "");
+		sqlite3_finalize(st);
+		st = NULL;
+		if (already) {
+			snprintf(tmp, sizeof tmp,
+			    "checkpoint %ld (label '%s') already closed\n", id, label);
+			gbuf_adds(text, tmp);
+			sqlite3_close(db);
+			prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+			return 0;
+		}
+		utc_now(now);
+		rc = sqlite3_prepare_v2(db,
+		    "UPDATE checkpoints SET status='closed',closed_at=?1,closed_by=?2"
+		    " WHERE id=?3", -1, &st, NULL);
+		if (rc == SQLITE_OK) {
+			sqlite3_bind_text(st, 1, now, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 2, closer, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_int64(st, 3, (long long)id);
+			rc = sqlite3_step(st);
+		}
+		sqlite3_finalize(st);
+		if (rc == SQLITE_DONE) {
+			snprintf(tmp, sizeof tmp,
+			    "closed checkpoint %ld (label '%s')\n", id, label);
+			gbuf_adds(text, tmp);
+		} else {
+			*is_error = 1;
+			gbuf_adds(text, "journal write failed\n");
+		}
+	}
+	sqlite3_close(db);
+	prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* initialize instructions: the checkpoint register at connect time  */
+/* ------------------------------------------------------------------ */
+#define CHECKPOINT_INSTRUCTIONS_N 5
+#define CHECKPOINT_INSTRUCTIONS_TITLE 64
+
+static void instr_title(gbuf *out, const unsigned char *t) {
+	size_t n;
+	if (!t || !t[0])
+		return;
+	gbuf_adds(out, " '");
+	n = strlen((const char *)t);
+	if (n > CHECKPOINT_INSTRUCTIONS_TITLE) {
+		gbuf_addn(out, (const char *)t, CHECKPOINT_INSTRUCTIONS_TITLE - 3);
+		gbuf_adds(out, "...'");
+	} else {
+		gbuf_adds(out, (const char *)t);
+		gbuf_adds(out, "'");
+	}
+}
+
+void checkpoint_instructions(gbuf *out) {
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	char ebuf[256], tmp[96];
+	long total = 0;
+	int n = 0, v2 = 1;
+	gbuf_adds(out,
+	    "Session checkpoints are a persistent register of unfinished work"
+	    " shared by all agents on this host."
+	    " checkpoint_list shows the active register (newest first, with a"
+	    " total count); checkpoint_resume consumes one by id (a bare number"
+	    " like \"3\" means checkpoint id 3); checkpoint_close retires"
+	    " finished work without deleting its history. On session start,"
+	    " list the active checkpoints and ask the operator whether to"
+	    " resume one, start fresh, or close one. Never auto-resume. ");
+	/* Read-only: never create or migrate the journal at connect
+	 * time. A missing or legacy journal degrades to static
+	 * guidance (legacy rows predate status: all count as active). */
+	db = db_open_ro(path_notes_db(), ebuf, sizeof ebuf);
+	if (!db)
+		return;
+	if (sqlite3_prepare_v2(db,
+	    "SELECT COUNT(*) FROM checkpoints WHERE status='active'",
+	    -1, &st, NULL) != SQLITE_OK) {
+		sqlite3_finalize(st);
+		st = NULL;
+		v2 = 0;
+		if (sqlite3_prepare_v2(db,
+		    "SELECT COUNT(*) FROM checkpoints", -1, &st, NULL) != SQLITE_OK) {
+			sqlite3_close(db);
+			return;
+		}
+	}
+	if (sqlite3_step(st) == SQLITE_ROW)
+		total = (long)sqlite3_column_int64(st, 0);
+	sqlite3_finalize(st);
+	st = NULL;
+	if (total <= 0) {
+		gbuf_adds(out, "No active checkpoints recorded.");
+		sqlite3_close(db);
+		return;
+	}
+	snprintf(tmp, sizeof tmp, "Active checkpoints (%ld total): ", total);
+	gbuf_adds(out, tmp);
+	if (v2) {
+		sqlite3_prepare_v2(db,
+		    "SELECT id,label,project,workstream,title FROM checkpoints"
+		    " WHERE status='active' ORDER BY id DESC LIMIT "
+		    "5", -1, &st, NULL);
+	} else {
+		/* Legacy shape: project slot carries the scope. */
+		sqlite3_prepare_v2(db,
+		    "SELECT id,label,package,'','',title FROM checkpoints"
+		    " ORDER BY id DESC LIMIT 5", -1, &st, NULL);
+	}
+	if (st) {
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			const unsigned char *l, *p, *w;
+			if (n > 0)
+				gbuf_adds(out, "; ");
+			snprintf(tmp, sizeof tmp, "[%lld] label '",
+			    (long long)sqlite3_column_int64(st, 0));
+			gbuf_adds(out, tmp);
+			l = sqlite3_column_text(st, 1);
+			gbuf_adds(out, l ? (const char *)l : "");
+			gbuf_adds(out, "'");
+			p = sqlite3_column_text(st, 2);
+			if (p && p[0]) {
+				gbuf_adds(out, " project '");
+				gbuf_adds(out, (const char *)p);
+				gbuf_adds(out, "'");
+			}
+			w = sqlite3_column_text(st, 3);
+			if (w && w[0]) {
+				gbuf_adds(out, " workstream '");
+				gbuf_adds(out, (const char *)w);
+				gbuf_adds(out, "'");
+			}
+			instr_title(out, sqlite3_column_text(st, 4));
+			n++;
+		}
+	}
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+	if (total > n) {
+		snprintf(tmp, sizeof tmp,
+		    "; and %ld more. checkpoint_list shows the full register.", total - n);
+		gbuf_adds(out, tmp);
+	} else {
+		gbuf_adds(out, ".");
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -3882,6 +4305,10 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
 		return t_checkpoint_save(args, text, is_error, err, sizeof err);
 	if (strcmp(name, "checkpoint_resume") == 0)
 		return t_checkpoint_resume(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "checkpoint_list") == 0)
+		return t_checkpoint_list(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "checkpoint_close") == 0)
+		return t_checkpoint_close(args, text, is_error, err, sizeof err);
 	return -1;
 }
 

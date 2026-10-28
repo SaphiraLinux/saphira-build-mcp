@@ -15,4 +15,10 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error);
  * unverified - attribution, never authentication. */
 void sbm_set_recorder(const char *recorder);
 
+/* Build the initialize instructions: static checkpoint-register
+ * guidance plus the live active set (first five plus total count).
+ * Read-only against the journal; fails open to static guidance when
+ * the journal is unavailable or legacy. */
+void checkpoint_instructions(gbuf *out);
+
 #endif

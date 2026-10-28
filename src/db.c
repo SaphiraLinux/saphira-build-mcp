@@ -56,8 +56,54 @@ static const char *notes_schema_sql =
     "id INTEGER PRIMARY KEY,label TEXT NOT NULL,"
     "package TEXT NOT NULL DEFAULT '',title TEXT NOT NULL DEFAULT '',"
     "body TEXT NOT NULL,author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',"
-    "src_commit TEXT,recipe_commit TEXT,created_at TEXT NOT NULL);"
+    "src_commit TEXT,recipe_commit TEXT,created_at TEXT NOT NULL,"
+    "status TEXT NOT NULL DEFAULT 'active',"
+    "project TEXT NOT NULL DEFAULT '',workstream TEXT NOT NULL DEFAULT '',"
+    "closed_at TEXT,closed_by TEXT);"
     "CREATE INDEX IF NOT EXISTS idx_checkpoints_label ON checkpoints(label,id);";
+
+/* Checkpoints v2 (0.7.0): the active-by-default register. New columns
+ * on the append-only checkpoints table; pre-0.7.0 rows read back as
+ * active with empty project/workstream (SQLite fills ADD COLUMN ..
+ * DEFAULT into existing rows; closed_at/closed_by stay NULL). Status
+ * values are code-enforced ('active'/'closed', see tools.c); close
+ * never deletes, it only flips status. */
+static const char *checkpoint_v2_add[] = {
+	"ALTER TABLE checkpoints ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+	"ALTER TABLE checkpoints ADD COLUMN project TEXT NOT NULL DEFAULT ''",
+	"ALTER TABLE checkpoints ADD COLUMN workstream TEXT NOT NULL DEFAULT ''",
+	"ALTER TABLE checkpoints ADD COLUMN closed_at TEXT",
+	"ALTER TABLE checkpoints ADD COLUMN closed_by TEXT",
+	NULL
+};
+static const char *checkpoint_v2_names[] = {
+	"status", "project", "workstream", "closed_at", "closed_by", NULL
+};
+
+static void ensure_checkpoints_v2(sqlite3 *db) {
+	int i;
+	sqlite3_stmt *st = NULL;
+	/* One PRAGMA scan per missing-candidate column: the table is
+	 * tiny and this runs once per journal open. */
+	for (i = 0; checkpoint_v2_names[i]; i++) {
+		int found = 0;
+		if (sqlite3_prepare_v2(db, "PRAGMA table_info(checkpoints)",
+		    -1, &st, NULL) != SQLITE_OK)
+			return;
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			const unsigned char *n = sqlite3_column_text(st, 1);
+			if (n && strcmp((const char *)n,
+			    checkpoint_v2_names[i]) == 0) {
+				found = 1;
+				break;
+			}
+		}
+		sqlite3_finalize(st);
+		st = NULL;
+		if (!found)
+			sqlite3_exec(db, checkpoint_v2_add[i], NULL, NULL, NULL);
+	}
+}
 
 sqlite3 *db_open_notes(char *err, size_t errsz) {
 	sqlite3 *db = NULL;
@@ -81,6 +127,7 @@ sqlite3 *db_open_notes(char *err, size_t errsz) {
 		sqlite3_close(db);
 		return NULL;
 	}
+	ensure_checkpoints_v2(db);
 	return db;
 }
 

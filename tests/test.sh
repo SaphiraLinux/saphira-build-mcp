@@ -236,7 +236,7 @@ t_contains "initialize names server" "$out" '"name":"saphira-build-mcp"'
 out=$(mcp '{"jsonrpc":"2.0","id":2,"method":"ping"}')
 t_contains "ping empty result" "$out" '"result":{}'
 out=$(mcp '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')
-for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness build_request package_bump checkpoint_save checkpoint_resume; do
+for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness build_request package_bump checkpoint_save checkpoint_resume checkpoint_list checkpoint_close; do
 	t_contains "tools/list has $tool" "$out" "\"name\":\"$tool\""
 done
 out=$(mcp '{"jsonrpc":"2.0","id":4,"method":"nope"}')
@@ -477,6 +477,67 @@ out=$(mcp '{"jsonrpc":"2.0","id":87,"method":"tools/call","params":{"name":"chec
 t_contains "checkpoint resume id zero -32602" "$out" '"code":-32602'
 out=$(mcp '{"jsonrpc":"2.0","id":88,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":"two"}}}')
 t_contains "checkpoint resume id type -32602" "$out" '"code":-32602'
+
+# --- checkpoints 0.7.0: active register, close, identity, instructions
+# two agents share one journal: identity fields keep lines apart
+out=$(mcp '{"jsonrpc":"2.0","id":89,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"mcp-070","title":"register work","body":"two agents share /recipes","project":"saphira","workstream":"mcp-070","author":"muse"}}}')
+t_contains "checkpoint save identity" "$out" "recorded checkpoint 5 (label 'mcp-070')"
+out=$(mcp '{"jsonrpc":"2.0","id":90,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"kernel-cal","title":"Kernel calibration","body":"unfinished","project":"saphira","workstream":"kernel","author":"gpt"}}}')
+t_contains "checkpoint save second agent" "$out" "recorded checkpoint 6 (label 'kernel-cal')"
+# the register shows every agent's unfinished work, regardless of age
+out=$(mcp '{"jsonrpc":"2.0","id":91,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{}}}')
+t_contains "checkpoint list header" "$out" "active checkpoints: 6 total (showing 6)"
+t_contains "checkpoint list keeps older work" "$out" "[1]"
+t_contains "checkpoint list identity" "$out" "workstream 'mcp-070'"
+out=$(mcp '{"jsonrpc":"2.0","id":92,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{"project":"saphira","workstream":"kernel"}}}')
+t_contains "checkpoint list workstream filter" "$out" "1 total (showing 1)"
+t_contains "checkpoint list filter row" "$out" "[6]"
+t_not_contains "checkpoint list filter hides other" "$out" "[5]"
+# close: unknown, then real, then idempotent; history survives closing
+out=$(mcp '{"jsonrpc":"2.0","id":93,"method":"tools/call","params":{"name":"checkpoint_close","arguments":{"id":99}}}')
+t_contains "checkpoint close unknown isError" "$out" '"isError":true'
+out=$(mcp '{"jsonrpc":"2.0","id":94,"method":"tools/call","params":{"name":"checkpoint_close","arguments":{"id":5}}}')
+t_contains "checkpoint close ok" "$out" "closed checkpoint 5 (label 'mcp-070')"
+out=$(mcp '{"jsonrpc":"2.0","id":95,"method":"tools/call","params":{"name":"checkpoint_close","arguments":{"id":5}}}')
+t_contains "checkpoint close idempotent" "$out" "already closed"
+out=$(mcp '{"jsonrpc":"2.0","id":96,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{}}}')
+t_contains "checkpoint close hides from active" "$out" "5 total (showing 5)"
+t_not_contains "checkpoint close hides row" "$out" "[5]"
+out=$(mcp '{"jsonrpc":"2.0","id":97,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{"status":"all"}}}')
+t_contains "checkpoint list all keeps closed" "$out" "(closed)"
+out=$(mcp '{"jsonrpc":"2.0","id":98,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":5}}}')
+t_contains "checkpoint resume closed by id" "$out" "status: closed"
+t_contains "checkpoint resume closed body" "$out" "two agents share /recipes"
+# invalid list/close inputs are transport errors, never journal writes
+out=$(mcp '{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{"status":"bogus"}}}')
+t_contains "checkpoint list bad status -32602" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"checkpoint_close","arguments":{}}}')
+t_contains "checkpoint close missing id -32602" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"checkpoint_close","arguments":{"id":0}}}')
+t_contains "checkpoint close id zero -32602" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"x","body":"y","project":"'"$(python3 -c "print('p'*65)")"'"}}}')
+t_contains "checkpoint save oversize project -32602" "$out" '"code":-32602'
+# instructions advertise the register at connect time
+out=$(mcp '{"jsonrpc":"2.0","id":103,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
+t_contains "initialize has instructions" "$out" '"instructions":"Session checkpoints are a persistent register'
+t_contains "initialize lists active" "$out" "Active checkpoints (5 total)"
+t_contains "initialize names row" "$out" "kernel-cal"
+t_contains "initialize never auto-resume" "$out" "Never auto-resume"
+# legacy journal: pre-0.7.0 rows read back as active (migration proof)
+sqlite3 "$FIX/legacy-notes.db" "CREATE TABLE checkpoints(id INTEGER PRIMARY KEY,label TEXT NOT NULL,package TEXT NOT NULL DEFAULT '',title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL,author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',src_commit TEXT,recipe_commit TEXT,created_at TEXT NOT NULL); INSERT INTO checkpoints(label,body,author,created_at) VALUES('legacy-line','old work','ada','2026-10-20T00:00:00Z');"
+out=$(SBM_NOTES_DB="$FIX/legacy-notes.db" mcp '{"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{}}}')
+t_contains "checkpoint legacy migrates to active" "$out" "1 total (showing 1)"
+t_contains "checkpoint legacy row" "$out" "legacy-line"
+out=$(SBM_NOTES_DB="$FIX/legacy-notes.db" mcp '{"jsonrpc":"2.0","id":105,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
+t_contains "checkpoint legacy instructions" "$out" "Active checkpoints (1 total)"
+# fresh journal: empty register reads as zero, honestly stated
+sqlite3 "$FIX/fresh-notes.db" "CREATE TABLE checkpoints(id INTEGER PRIMARY KEY,label TEXT NOT NULL,package TEXT NOT NULL DEFAULT '',title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL,author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',src_commit TEXT,recipe_commit TEXT,created_at TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',project TEXT NOT NULL DEFAULT '',workstream TEXT NOT NULL DEFAULT '',closed_at TEXT,closed_by TEXT);"
+out=$(SBM_NOTES_DB="$FIX/fresh-notes.db" mcp '{"jsonrpc":"2.0","id":106,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
+t_contains "initialize fresh zero" "$out" "No active checkpoints recorded."
+# missing journal: static guidance only, never an invented count
+out=$(SBM_NOTES_DB="$FIX/missing-notes.db" mcp '{"jsonrpc":"2.0","id":107,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
+t_contains "initialize missing journal static" "$out" '"instructions":"Session checkpoints are a persistent register'
+t_not_contains "initialize missing journal no count" "$out" "Active checkpoints ("
 
 # --- framing: every stdout line is valid JSON ---------------------------
 mcp '{"jsonrpc":"2.0","id":30,"method":"tools/list"}' '{"jsonrpc":"2.0","id":31,"method":"ping"}' > "$ROOT/frames.txt"

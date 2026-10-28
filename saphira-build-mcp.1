@@ -1,4 +1,4 @@
-.TH SAPHIRA-BUILD-MCP 1 "October 2026" "saphira-build-mcp 0.6.0" "Saphira"
+.TH SAPHIRA-BUILD-MCP 1 "October 2026" "saphira-build-mcp 0.7.0" "Saphira"
 .SH NAME
 saphira-build-mcp \- Saphira build/package queries and evidence journal
 .SH SYNOPSIS
@@ -25,19 +25,31 @@ With
 .B --list-tools
 it prints the tools/list document (also the build-time self-check).
 .SH TOOLS
-Eighteen tools. Fourteen are read-only: package_search,
+Twenty-two tools. Sixteen are read-only: package_search,
 package_info, package_dependencies, package_why_installed,
 package_installed, package_build_status, package_build_history,
 package_build_log, package_artifacts, build_queue,
 package_identity, package_notes_get, package_policy_status,
-package_readiness. Four take action with deliberately narrow
-authority: package_notes_add and package_policy_record write only
-to the journal; build_request queues through the daemon intake
+package_readiness, checkpoint_resume, checkpoint_list. Six take
+action with deliberately narrow authority: package_notes_add,
+package_policy_record, checkpoint_save and checkpoint_close write
+only to the journal; build_request queues through the daemon intake
 (the daemon executes detached, the MCP never runs buildpkg);
 package_bump runs bumppkg guards and all. None can sign, publish
 or install: a staged row names the exact human-gated ask
 (`sudo sign-apk-repo <pkg>`). Every result ends
 with a [src: ...] provenance line naming the files read.
+.PP
+Checkpoints are a persistent register of unfinished work shared by
+all agents on the host, and the initialize reply advertises the
+active set (first five plus the total count) in its instructions
+field. checkpoint_list shows the active register (newest first,
+with the total, so a capped page never hides the backlog);
+checkpoint_resume consumes one row by id, label, or newest;
+checkpoint_close retires finished work by id without deleting its
+history (a closed row stays resumable by id). A new agent lists
+the register and asks the operator whether to resume one, start
+fresh, or close one; it never auto-resumes.
 .PP
 Policy records pin the revisions they were verified against
 (recipe, registry and artifact digests). A record whose pins no

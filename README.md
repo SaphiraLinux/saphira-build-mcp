@@ -24,7 +24,7 @@ make test STATIC=0
 `make test` runs hermetic `tests/test.sh`: fixture recipe tree,
 queue/repository databases, retained logs, fake `apk`, `saphira-build`
 and `bumppkg` doubles on PATH, a scratch journal database, and
-scripted JSON-RPC sessions. 104 checks, including SQLite discipline
+scripted JSON-RPC sessions. 178 checks, including SQLite discipline
 proof (repository DB byte-identical throughout; queue deltas and
 journal growth asserted exactly where the action tools run).
 
@@ -36,16 +36,27 @@ journal growth asserted exactly where the action tools run).
 ./saphira-build-mcp --list-tools  # tools/list document
 ```
 
-Sixteen tools. Fourteen read-only: `package_search`, `package_info`,
+Sixteen read-only tools: `package_search`, `package_info`,
 `package_dependencies`, `package_why_installed`, `package_installed`,
 `package_build_status`, `package_build_history`, `package_build_log`,
 `package_artifacts`, `build_queue`, `package_identity`,
-`package_notes_get`, `package_policy_status`, `package_readiness`.
-Four take narrowly-scoped action: `package_notes_add` and
-`package_policy_record` write only to the journal; `build_request`
+`package_notes_get`, `package_policy_status`, `package_readiness`,
+`checkpoint_resume`, `checkpoint_list`.
+Six take narrowly-scoped action: `package_notes_add`,
+`package_policy_record`, `checkpoint_save` and `checkpoint_close`
+write only to the journal; `build_request`
 queues through the daemon intake (the daemon executes detached —
 the MCP never runs buildpkg itself); `package_bump` runs the
 bumppkg guards. Nothing here can sign, publish or install.
+
+Checkpoints are a persistent register of unfinished work shared by
+all agents on the host. The `initialize` reply advertises the active
+set (first five plus the total count) in its `instructions` field;
+`checkpoint_list` shows the active register, `checkpoint_resume`
+consumes one row by id, and `checkpoint_close` retires finished work
+without deleting its history. A new agent lists the register and asks
+the operator whether to resume one, start fresh, or close one — it
+never auto-resumes.
 
 Disabled recipes are excluded unless `include_disabled` is set.
 
@@ -77,7 +88,7 @@ make test STATIC=0
 
 `make test` runs hermetic `tests/test.sh`: fixture recipe tree,
 queue/repository databases, retained logs, a fake `apk` on PATH, and
-scripted JSON-RPC sessions. 51 checks, including SQLite read-only
+scripted JSON-RPC sessions. 178 checks, including SQLite read-only
 proof (fixture DB hashes byte-identical before and after).
 
 ## Protocol
@@ -88,10 +99,11 @@ proof (fixture DB hashes byte-identical before and after).
 ./saphira-build-mcp --list-tools  # tools/list document
 ```
 
-Eleven tools: `package_search`, `package_info`,
+Twenty-two tools: `package_search`, `package_info`,
 `package_dependencies`, `package_why_installed`, `package_installed`,
 `package_build_status`, `package_build_history`, `package_build_log`,
-`package_artifacts`, `build_queue`, `package_identity`.
+`package_artifacts`, `build_queue`, `package_identity`,
+plus the journal and checkpoint tools documented above.
 
 Disabled recipes are excluded unless `include_disabled` is set.
 

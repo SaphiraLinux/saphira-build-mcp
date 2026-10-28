@@ -99,15 +99,29 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		} else {
 			sbm_set_recorder("");
 		}
-		gbuf r;
+		gbuf r, ins;
 		gbuf_init(&r);
+		gbuf_init(&ins);
+		/* The checkpoint register at connect time: static
+		 * guidance plus the live active set. Read-only and
+		 * fail-open (an unavailable journal yields the static
+		 * half); a new agent learns the register without
+		 * guessing ids. */
+		checkpoint_instructions(&ins);
 		gbuf_adds(&r, "{\"protocolVersion\":");
 		json_escape(&r, pv, strlen(pv));
 		gbuf_adds(&r,
 		          ",\"capabilities\":{\"tools\":{\"listChanged\":false}},"
-		          "\"serverInfo\":{\"name\":\"" SBM_NAME "\",\"version\":\"" SBM_VERSION "\"}}");
+		          "\"serverInfo\":{\"name\":\"" SBM_NAME "\",\"version\":\"" SBM_VERSION "\"},"
+		          "\"instructions\":");
+		if (ins.failed || !ins.p)
+			gbuf_adds(&r, "\"\"");
+		else
+			json_escape(&r, ins.p, ins.len);
+		gbuf_adds(&r, "}");
 		jsonrpc_result(resp, idraw, idlen, r.p ? r.p : "{}");
 		gbuf_free(&r);
+		gbuf_free(&ins);
 	} else if (strcmp(m, "ping") == 0) {
 		jsonrpc_result(resp, idraw, idlen, "{}");
 	} else if (strcmp(m, "tools/list") == 0) {

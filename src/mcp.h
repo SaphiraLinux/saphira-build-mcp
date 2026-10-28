@@ -2,7 +2,7 @@
 #define SBM_MCP_H
 
 #define SBM_NAME "saphira-build-mcp"
-#define SBM_VERSION "0.6.0"
+#define SBM_VERSION "0.7.0"
 
 #define SBM_MAX_REQUEST_BYTES (64u * 1024u)
 #define SBM_MAX_HEADER_BYTES 16384u
@@ -11,7 +11,7 @@
 #define SBM_MAX_OUTPUT_FILE_BYTES (2u * 1024u * 1024u)
 
 /* Static tools/list result: descriptions and schemas stay minimal.
- * Fifteen read-only tools plus three journal-scoped writes (notes.db
+ * Sixteen read-only tools plus four journal-scoped writes (notes.db
  * only - no recipe, queue, revision, signing, publish, install or
  * restart surface exists by design, not by omission), plus two
  * daemon/operator ops (build_request queues detached work, package_bump
@@ -36,8 +36,10 @@
  "{\"name\":\"package_readiness\",\"description\":\"What is verified, stale, unverified, plus open issues and recent notes.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}," \
 	"{\"name\":\"build_request\",\"description\":\"Queue a build through the daemon intake (scan); the daemon executes detached. Records the reason in the journal.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"reason\"]}}," \
 	"{\"name\":\"package_bump\",\"description\":\"Revision bump with bumppkg guards; the reason is journaled. Never signs, publishes or installs.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"reason\"]}}," \
-	"{\"name\":\"checkpoint_save\",\"description\":\"Save a pre-restart session checkpoint (journal only). Resume post-restart with checkpoint_resume.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"},\"src_commit\":{\"type\":\"string\"},\"recipe_commit\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"label\",\"body\"]}}," \
-	"{\"name\":\"checkpoint_resume\",\"description\":\"Resume a saved checkpoint by id, by label (newest), or newest overall when neither is given.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"number\"},\"label\":{\"type\":\"string\"}}}}" \
+	"{\"name\":\"checkpoint_save\",\"description\":\"Save a pre-restart session checkpoint (journal only, active by default). Resume post-restart with checkpoint_resume.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"},\"project\":{\"type\":\"string\"},\"workstream\":{\"type\":\"string\"},\"src_commit\":{\"type\":\"string\"},\"recipe_commit\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"label\",\"body\"]}}," \
+	"{\"name\":\"checkpoint_resume\",\"description\":\"Resume a saved checkpoint by id, by label (newest), or newest overall when neither is given. Closed checkpoints stay resumable by id; checkpoint_list is the active register.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"number\"},\"label\":{\"type\":\"string\"}}}}" \
+	",{\"name\":\"checkpoint_list\",\"description\":\"List the active checkpoint register (newest first, with total count). Closed work is hidden unless status is closed/all or include_closed is set.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"closed\",\"all\"]},\"project\":{\"type\":\"string\"},\"workstream\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"},\"include_closed\":{\"type\":\"boolean\"}}}}" \
+	",{\"name\":\"checkpoint_close\",\"description\":\"Retire a finished checkpoint from the active register by id. Never deletes: the row stays resumable by id.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"number\"}},\"required\":[\"id\"]}}" \
 	"]}"
 
 int run_stdio(void);
