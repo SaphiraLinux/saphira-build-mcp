@@ -3078,6 +3078,24 @@ static int t_policy_status(jv *args, gbuf *text, int *is_error, char *err, size_
 	return 0;
 }
 
+/* First line of a note body, bounded for readiness auto-recall.
+ * Predictable small addition: at most 160 chars, cut at the first
+ * newline, overlong lines gain "...". NULL-safe. Full bodies stay
+ * behind package_notes_get (selective pull). */
+static void body_first_line(gbuf *text, const unsigned char *body) {
+	size_t i = 0;
+	if (!body || !body[0]) {
+		gbuf_adds(text, "(no body)");
+		return;
+	}
+	while (body[i] && body[i] != '\n' && i < 160) {
+		gbuf_addch(text, (char)body[i]);
+		i++;
+	}
+	if (body[i] && body[i] != '\n')
+		gbuf_adds(text, "...");
+}
+
 /* ------------------------------------------------------------------ */
 /* package_readiness                                                   */
 /* ------------------------------------------------------------------ */
@@ -3169,6 +3187,58 @@ static int t_readiness(jv *args, gbuf *text, int *is_error, char *err, size_t er
 		}
 	}
 	sqlite3_finalize(st);
+	st = NULL;
+	/* Auto-recall: inline the compact chain so one call carries the
+	 * constraint (e.g. musl calibration blocked, dashboard INSTALL vs
+	 * refusal). Bounded: newest 3 only, first line of each body, full
+	 * bodies via package_notes_get. */
+	{
+		sqlite3_stmt *rs = NULL;
+		int shown = 0;
+		gbuf_adds(text, "recent:\n");
+		if (sqlite3_prepare_v2(db,
+		    "SELECT id,kind,title,body,author,created_at"
+		    " FROM notes WHERE package=?1 ORDER BY id DESC LIMIT 3",
+		    -1, &rs, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(rs, 1, pkg, -1, SQLITE_TRANSIENT);
+			while (sqlite3_step(rs) == SQLITE_ROW) {
+				const unsigned char *ttl =
+				    sqlite3_column_text(rs, 2);
+				const unsigned char *bdy =
+				    sqlite3_column_text(rs, 3);
+				char tmp[64];
+				snprintf(tmp, sizeof tmp, "  [%lld] ",
+				         (long long)sqlite3_column_int64(rs, 0));
+				gbuf_adds(text, tmp);
+				sb_cell(text, rs, 1);
+				gbuf_addch(text, ' ');
+				sb_cell(text, rs, 5);
+				gbuf_adds(text, " by ");
+				sb_cell(text, rs, 4);
+				gbuf_addch(text, '\n');
+				if (ttl && ttl[0]) {
+					gbuf_adds(text, "    title: ");
+					gbuf_adds(text, (const char *)ttl);
+					gbuf_addch(text, '\n');
+				}
+				gbuf_adds(text, "    body: ");
+				body_first_line(text, bdy);
+				gbuf_addch(text, '\n');
+				shown++;
+			}
+		}
+		sqlite3_finalize(rs);
+		if (!shown)
+			gbuf_adds(text, "  (no notes recorded)\n");
+		else if (nnotes > shown) {
+			char tmp[64];
+			snprintf(tmp, sizeof tmp,
+			         "  (... %ld more; full bodies via"
+			         " package_notes_get)\n", nnotes - shown);
+			gbuf_adds(text, tmp);
+		} else
+			gbuf_adds(text, "  (full bodies via package_notes_get)\n");
+	}
 	sqlite3_close(db);
 	{
 		char tmp[128];

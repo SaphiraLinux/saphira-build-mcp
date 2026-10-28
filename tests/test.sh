@@ -330,6 +330,10 @@ t_contains "policy status unverified" "$out" "payload-layout: UNVERIFIED (no rec
 out=$(mcp '{"jsonrpc":"2.0","id":47,"method":"tools/call","params":{"name":"package_readiness","arguments":{"package":"pkg-a"}}}')
 t_contains "readiness verified" "$out" "unix-identity: PASS CURRENT"
 t_contains "readiness notes" "$out" "notes: 3 (1 open issue)"
+t_contains "readiness recent header" "$out" "recent:"
+t_contains "readiness recent newest" "$out" "keep libfoo unresolved"
+t_contains "readiness recent title" "$out" "title: "
+t_contains "readiness recent pull hint" "$out" "package_notes_get"
 # evidence freshness: touch the recipe, the PASS must go stale
 printf '# journal staleness probe\n' >> "$FIX/recipes/pkg-a/recipe.sh"
 out=$(mcp '{"jsonrpc":"2.0","id":48,"method":"tools/call","params":{"name":"package_policy_status","arguments":{"package":"pkg-a"}}}')
