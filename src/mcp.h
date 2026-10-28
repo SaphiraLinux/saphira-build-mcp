@@ -2,7 +2,7 @@
 #define SBM_MCP_H
 
 #define SBM_NAME "saphira-build-mcp"
-#define SBM_VERSION "0.3.0"
+#define SBM_VERSION "0.4.0"
 
 #define SBM_MAX_REQUEST_BYTES (64u * 1024u)
 #define SBM_MAX_HEADER_BYTES 16384u
@@ -13,7 +13,9 @@
 /* Static tools/list result: descriptions and schemas stay minimal.
  * Fourteen read-only tools plus two journal-scoped writes (notes.db
  * only - no recipe, queue, revision, signing, publish, install or
- * restart surface exists by design, not by omission). */
+ * restart surface exists by design, not by omission), plus two
+ * daemon/operator ops (build_request queues detached work, package_bump
+ * applies bumppkg guards; neither signs, publishes nor installs). */
 #define SBM_TOOLS_LIST_JSON \
 	"{\"tools\":[" \
 	"{\"name\":\"package_search\",\"description\":\"Find packages by name or description substring.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"},\"include_disabled\":{\"type\":\"boolean\"}},\"required\":[\"query\"]}}," \
@@ -31,7 +33,7 @@
 	"{\"name\":\"package_notes_add\",\"description\":\"Record an engineering finding, decision or open issue (journal only).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\",\"enum\":[\"finding\",\"decision\",\"issue\"]},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"kind\",\"body\"]}}," \
 	"{\"name\":\"package_policy_status\",\"description\":\"Policy checks with evidence and freshness for a package.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}," \
 	"{\"name\":\"package_policy_record\",\"description\":\"Attach verified evidence to a policy check (journal only).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"check\":{\"type\":\"string\",\"enum\":[\"unix-identity\",\"payload-layout\",\"revision-discipline\",\"dependency-closure\",\"signing-acceptance\"]},\"result\":{\"type\":\"string\",\"enum\":[\"PASS\",\"FAIL\"]},\"evidence\":{\"type\":\"object\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"check\",\"result\"]}}," \
-	"{\"name\":\"package_readiness\",\"description\":\"What is verified, stale, unverified, plus open issues.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}," \
+ "{\"name\":\"package_readiness\",\"description\":\"What is verified, stale, unverified, plus open issues and recent notes.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}," \
 	"{\"name\":\"build_request\",\"description\":\"Queue a build through the daemon intake (scan); the daemon executes detached. Records the reason in the journal.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"reason\"]}}," \
 	"{\"name\":\"package_bump\",\"description\":\"Revision bump with bumppkg guards; the reason is journaled. Never signs, publishes or installs.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"reason\"]}}" \
 	"]}"
