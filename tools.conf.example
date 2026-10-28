@@ -1,0 +1,17 @@
+# tools.conf.example - curated starting set for /etc/saphira/mcp/tools.conf
+#
+# Copy to /etc/saphira/mcp/tools.conf (root-owned, 0640) and trim to
+# what the host needs. Missing file means built-ins only. A malformed
+# or unsafe line disables extensions; built-ins stay fully on.
+# checkpoint_* tools can never be switched off.
+#
+# tool <name> <abspath> <read|test> <timeout-s> <max-bytes> <sandbox on|off> <dir> -- <fixed args...>
+# No shell anywhere: fixed argv via execve. Callers pass no arguments.
+
+# git porcelain over the recipe tree (read-only; --no-pager, no pager env).
+tool repo_status /usr/bin/git read 10 65536 off /recipes -- --no-pager status --short --branch
+tool repo_diffcheck /usr/bin/git read 10 65536 off /recipes -- --no-pager diff --check
+tool repo_diffstat /usr/bin/git read 10 65536 off /recipes -- --no-pager diff --stat
+
+# recipe lint (test class: sandboxed; runs the packager-owned rules).
+tool recipe_verify /recipes/saphira-packager/tests/recipe-rules.sh test 120 131072 on /recipes --

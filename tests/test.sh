@@ -539,6 +539,99 @@ out=$(SBM_NOTES_DB="$FIX/missing-notes.db" mcp '{"jsonrpc":"2.0","id":107,"metho
 t_contains "initialize missing journal static" "$out" '"instructions":"Session checkpoints are a persistent register'
 t_not_contains "initialize missing journal no count" "$out" "Active checkpoints ("
 
+# --- tools.conf extensions --------------------------------------------
+# absent conf: built-ins only, no externals, never an error.
+out=$(SBM_TOOLS_CONF="$FIX/no-such.conf" mcp '{"jsonrpc":"2.0","id":200,"method":"tools/list"}')
+t_contains "ext absent conf builtins" "$out" '"name":"checkpoint_close"'
+t_not_contains "ext absent conf no externals" "$out" 'External ('
+# fixture externals: fixed argv only, sandbox off (hermetic).
+cat > "$FIX/bin/ext-ok.sh" <<EOF
+#!/bin/sh
+echo "ext-ok args: \$*"
+EOF
+chmod +x "$FIX/bin/ext-ok.sh"
+cat > "$FIX/bin/ext-fail.sh" <<EOF
+#!/bin/sh
+echo "ext-fail output"
+exit 3
+EOF
+chmod +x "$FIX/bin/ext-fail.sh"
+cat > "$FIX/bin/ext-slow.sh" <<EOF
+#!/bin/sh
+sleep 5
+echo "should never appear"
+EOF
+chmod +x "$FIX/bin/ext-slow.sh"
+cat > "$FIX/bin/ext-loud.sh" <<EOF
+#!/bin/sh
+i=0
+while [ \$i -lt 100 ]; do echo "loud line \$i ........................................"; i=\$((i+1)); done
+EOF
+chmod +x "$FIX/bin/ext-loud.sh"
+cat > "$FIX/ext-good.conf" <<EOF
+tool ext_ok $FIX/bin/ext-ok.sh read 10 65536 off $FIX --
+tool ext_fail $FIX/bin/ext-fail.sh read 10 65536 off $FIX --
+tool ext_slow $FIX/bin/ext-slow.sh read 1 65536 off $FIX --
+tool ext_loud $FIX/bin/ext-loud.sh read 10 64 off $FIX --
+tool ext_boxed $FIX/bin/ext-ok.sh read 10 65536 on $FIX --
+EOF
+out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":201,"method":"tools/list"}')
+t_contains "ext list has ext_ok" "$out" '"name":"ext_ok"'
+t_contains "ext list describes class" "$out" 'External (read):'
+out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":202,"method":"tools/call","params":{"name":"ext_ok","arguments":{}}}')
+t_contains "ext call output" "$out" 'ext-ok args:'
+t_contains "ext call exit 0" "$out" '[exit=0'
+t_contains "ext call no error" "$out" '"isError":false'
+out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":203,"method":"tools/call","params":{"name":"ext_fail","arguments":{}}}')
+t_contains "ext fail isError" "$out" '"isError":true'
+t_contains "ext fail exit 3" "$out" '[exit=3'
+out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":204,"method":"tools/call","params":{"name":"ext_slow","arguments":{}}}')
+t_contains "ext slow timeout" "$out" '[timeout]'
+t_contains "ext slow isError" "$out" '"isError":true'
+out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":205,"method":"tools/call","params":{"name":"ext_loud","arguments":{}}}')
+t_contains "ext loud truncated" "$out" '[truncated]'
+t_contains "ext loud no error" "$out" '"isError":false'
+t "ext audit ok row" "$(sqlite3 "$FIX/notes.db" "SELECT COUNT(*) FROM tool_runs WHERE tool='ext_ok' AND exit_status=0;")" "1" "1"
+t "ext audit timeout row" "$(sqlite3 "$FIX/notes.db" "SELECT COUNT(*) FROM tool_runs WHERE tool='ext_slow' AND timed_out=1;")" "1" "1"
+# malformed or unsafe conf: extensions (and expose-offs) disabled,
+# built-ins unaffected. one bad file per case.
+printf 'expose package_search off\ntool ext_q %s read 10 100 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-off.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-off.conf" mcp '{"jsonrpc":"2.0","id":210,"method":"tools/list"}')
+t_not_contains "ext off omitted" "$out" '"name":"package_search"'
+t_contains "ext off keeps ext" "$out" '"name":"ext_q"'
+out=$(SBM_TOOLS_CONF="$FIX/ext-off.conf" mcp '{"jsonrpc":"2.0","id":211,"method":"tools/call","params":{"name":"package_search","arguments":{"query":"pkg"}}}')
+t_contains "ext off call unknown" "$out" '"code":-32602'
+printf 'expose checkpoint_list off\ntool ext_q %s read 10 100 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-badckpt.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-badckpt.conf" mcp '{"jsonrpc":"2.0","id":212,"method":"tools/list"}')
+t_contains "ext checkpoint forced on" "$out" '"name":"checkpoint_list"'
+t_not_contains "ext bad conf no ext" "$out" 'External ('
+printf 'expose nosuchtool off\n' > "$FIX/ext-badexpose.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-badexpose.conf" mcp '{"jsonrpc":"2.0","id":213,"method":"tools/list"}')
+t_contains "ext unknown expose ignored" "$out" '"name":"package_search"'
+printf 'tool package_info %s read 10 100 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-shadow.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-shadow.conf" mcp '{"jsonrpc":"2.0","id":214,"method":"tools/list"}')
+t_contains "ext shadow keeps builtin" "$out" '"name":"package_info"'
+t_not_contains "ext shadow no ext" "$out" 'External ('
+printf 'tool badsh /bin/sh read 10 100 off %s -- -c\n' "$FIX" > "$FIX/ext-denied.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-denied.conf" mcp '{"jsonrpc":"2.0","id":215,"method":"tools/list"}')
+t_contains "ext denied exe builtins" "$out" '"name":"package_search"'
+t_not_contains "ext denied exe no ext" "$out" 'External ('
+printf 'tool badmeta %s read 10 100 off %s -- %s\n' "$FIX/bin/ext-ok.sh" "$FIX" 'a;b' > "$FIX/ext-meta.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-meta.conf" mcp '{"jsonrpc":"2.0","id":216,"method":"tools/list"}')
+t_not_contains "ext metachar no ext" "$out" 'External ('
+printf 'tool badstate %s read 10 100 off %s -- queue.db\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-state.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-state.conf" mcp '{"jsonrpc":"2.0","id":217,"method":"tools/list"}')
+t_not_contains "ext state token no ext" "$out" 'External ('
+printf 'tool gone /nonexistent/gone read 10 100 off %s --\n' "$FIX" > "$FIX/ext-gone.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-gone.conf" mcp '{"jsonrpc":"2.0","id":218,"method":"tools/call","params":{"name":"gone","arguments":{}}}')
+t_contains "ext missing exe isError" "$out" '"isError":true'
+t_contains "ext missing exe message" "$out" 'unavailable'
+out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":219,"method":"tools/call","params":{"name":"ext_boxed","arguments":{}}}')
+t_contains "ext sandbox runs" "$out" 'ext-ok args:'
+t_contains "ext sandbox exit 0" "$out" '[exit=0'
+out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" SBM_BWRAP="/nonexistent-bwrap" mcp '{"jsonrpc":"2.0","id":220,"method":"tools/call","params":{"name":"ext_boxed","arguments":{}}}')
+t_contains "ext sandbox missing fails closed" "$out" '"isError":true'
+
 # --- framing: every stdout line is valid JSON ---------------------------
 mcp '{"jsonrpc":"2.0","id":30,"method":"tools/list"}' '{"jsonrpc":"2.0","id":31,"method":"ping"}' > "$ROOT/frames.txt"
 python3 - "$ROOT/frames.txt" <<'EOF'

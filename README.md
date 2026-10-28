@@ -24,7 +24,7 @@ make test STATIC=0
 `make test` runs hermetic `tests/test.sh`: fixture recipe tree,
 queue/repository databases, retained logs, fake `apk`, `saphira-build`
 and `bumppkg` doubles on PATH, a scratch journal database, and
-scripted JSON-RPC sessions. 178 checks, including SQLite discipline
+scripted JSON-RPC sessions. 210 checks, including SQLite discipline
 proof (repository DB byte-identical throughout; queue deltas and
 journal growth asserted exactly where the action tools run).
 
@@ -88,8 +88,10 @@ make test STATIC=0
 
 `make test` runs hermetic `tests/test.sh`: fixture recipe tree,
 queue/repository databases, retained logs, a fake `apk` on PATH, and
-scripted JSON-RPC sessions. 178 checks, including SQLite read-only
-proof (fixture DB hashes byte-identical before and after).
+scripted JSON-RPC sessions. 210 checks, including SQLite read-only
+proof (fixture DB hashes byte-identical before and after) and the
+tools.conf extension suite (registry, allowlist, deny-lists, timeout,
+output caps, sandbox fail-closed, audit rows).
 
 ## Protocol
 
@@ -103,9 +105,42 @@ Twenty-two tools: `package_search`, `package_info`,
 `package_dependencies`, `package_why_installed`, `package_installed`,
 `package_build_status`, `package_build_history`, `package_build_log`,
 `package_artifacts`, `build_queue`, `package_identity`,
-plus the journal and checkpoint tools documented above.
+plus the journal and checkpoint tools documented above —
+and any `/etc/saphira/mcp/tools.conf` externals (see below).
 
 Disabled recipes are excluded unless `include_disabled` is set.
+
+## tools.conf: extensions without recompiling
+
+`/etc/saphira/mcp/tools.conf` (`SBM_TOOLS_CONF` to override) declares
+two things: an exposure allowlist for the built-ins, and an extension
+registry of curated external commands. Missing or unreadable conf
+means built-ins only — today's behaviour, byte-identical.
+
+```
+expose package_search off
+tool repo_status /usr/bin/git read 10 65536 off /recipes -- --no-pager status --short --branch
+tool recipe_verify /recipes/saphira-packager/tests/recipe-rules.sh test 120 131072 on /recipes --
+```
+
+Grammar is strict and fail-closed: a malformed or unsafe line disables
+extensions (built-ins stay fully on). `expose` targets must be real
+built-ins and can never switch off `checkpoint_*`. External entries
+carry fixed argv only — callers pass no arguments, no shell exists
+anywhere on the path (`execve` direct, scrubbed environment). Class
+is `read` or `test` (no write class exists); `test` entries run
+sandboxed by default (bwrap, `SBM_BWRAP` to override).
+
+Safety is deny-by-shape, not by promise: shells, interpreters,
+command-executing filters (awk/find/xargs), compilers, and anything
+that builds, signs, publishes or installs is unregistrable, as is any
+exe, directory or fixed arg naming MCP-owned writable state
+(`queue.db`, `repository.db`, `notes.db`, staged incoming). An awk
+script can be valid and still execute commands, so 0.8.0 ships
+narrowly-defined commands only — no generic runner claims. Every
+invocation (including failures) is audited to the journal
+`tool_runs` table with tool, argv, agent, exit status and elapsed
+time. See `tools.conf.example` for the curated starting set.
 
 ## Environment
 
@@ -113,8 +148,8 @@ Live paths default to the Saphira system; point them at fixtures
 for testing:
 
 `SBM_RECIPES` `SBM_QUEUE_DB` `SBM_REPO_DIR` `SBM_INCOMING` `SBM_TSV`
-`SBM_PASSWD` `SBM_GROUP` `SBM_APKDB` `SBM_NOTES_DB` (`SBM_AUTHOR`
-for journal attribution)
+`SBM_PASSWD` `SBM_GROUP` `SBM_APKDB` `SBM_NOTES_DB` `SBM_TOOLS_CONF`
+`SBM_BWRAP` (`SBM_AUTHOR` for journal attribution)
 
 ## Canonical builds
 

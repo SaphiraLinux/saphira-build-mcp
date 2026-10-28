@@ -1,5 +1,7 @@
 #include "tools.h"
+#include "conf.h"
 #include "db.h"
+#include "runner.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -4258,13 +4260,160 @@ void checkpoint_instructions(gbuf *out) {
 }
 
 /* ------------------------------------------------------------------ */
+/* tools.conf extensions                                                */
+/* ------------------------------------------------------------------ */
+/* The 22 built-in entries, in historical order. tools_list_json emits
+ * these (minus expose-offs) followed by registered externals, so the
+ * no-conf document is byte-identical to the pre-0.8.0 static text. */
+static const struct {
+	const char *name;
+	const char *entry;
+} base_tools[] = {
+	{ "package_search", "{\"name\":\"package_search\",\"description\":\"Find packages by name or description substring.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"},\"include_disabled\":{\"type\":\"boolean\"}},\"required\":[\"query\"]}}" },
+	{ "package_info", "{\"name\":\"package_info\",\"description\":\"Recipe fields and repository newest for a package.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}" },
+	{ "package_dependencies", "{\"name\":\"package_dependencies\",\"description\":\"Dependency edges for a package.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"direction\":{\"type\":\"string\",\"enum\":[\"deps\",\"reverse\",\"both\"]}},\"required\":[\"name\"]}}" },
+	{ "package_why_installed", "{\"name\":\"package_why_installed\",\"description\":\"Explain dependency chain(s) from a package to a dependency.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"dep\":{\"type\":\"string\"}},\"required\":[\"package\",\"dep\"]}}" },
+	{ "package_installed", "{\"name\":\"package_installed\",\"description\":\"Installed version versus repository newest.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}" },
+	{ "package_build_status", "{\"name\":\"package_build_status\",\"description\":\"Latest build verdict, timings and detail.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"include_disabled\":{\"type\":\"boolean\"}},\"required\":[\"name\"]}}" },
+	{ "package_build_history", "{\"name\":\"package_build_history\",\"description\":\"Previous build attempts with timings and SBU.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"},\"include_disabled\":{\"type\":\"boolean\"}},\"required\":[\"name\"]}}" },
+	{ "package_build_log", "{\"name\":\"package_build_log\",\"description\":\"Retained build/install log tail.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"stage\":{\"type\":\"string\",\"enum\":[\"build\",\"install\",\"both\"]},\"tail_bytes\":{\"type\":\"number\"}},\"required\":[\"name\"]}}" },
+	{ "package_artifacts", "{\"name\":\"package_artifacts\",\"description\":\"Staged, signed and published artifacts.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}" },
+	{ "build_queue", "{\"name\":\"build_queue\",\"description\":\"Queued and active builds.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"limit\":{\"type\":\"number\"}}}}" },
+	{ "package_identity", "{\"name\":\"package_identity\",\"description\":\"Unix identity: fragment, registry, reservations, live accounts.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}" },
+	{ "package_notes_get", "{\"name\":\"package_notes_get\",\"description\":\"Read engineering notes for a package (newest first).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\",\"enum\":[\"finding\",\"decision\",\"issue\",\"success\",\"failure\",\"lesson\"]},\"limit\":{\"type\":\"number\"}},\"required\":[\"package\"]}}" },
+	{ "package_notes_add", "{\"name\":\"package_notes_add\",\"description\":\"Record an engineering finding, decision, open issue, success, failure or lesson (journal only).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\",\"enum\":[\"finding\",\"decision\",\"issue\",\"success\",\"failure\",\"lesson\"]},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"kind\",\"body\"]}}" },
+	{ "package_policy_status", "{\"name\":\"package_policy_status\",\"description\":\"Policy checks with evidence and freshness for a package.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}" },
+	{ "package_policy_record", "{\"name\":\"package_policy_record\",\"description\":\"Attach verified evidence to a policy check (journal only).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"check\":{\"type\":\"string\",\"enum\":[\"unix-identity\",\"payload-layout\",\"revision-discipline\",\"dependency-closure\",\"signing-acceptance\"]},\"result\":{\"type\":\"string\",\"enum\":[\"PASS\",\"FAIL\"]},\"evidence\":{\"type\":\"object\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"check\",\"result\"]}}" },
+	{ "package_readiness", "{\"name\":\"package_readiness\",\"description\":\"What is verified, stale, unverified, plus open issues and recent notes.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}" },
+	{ "build_request", "{\"name\":\"build_request\",\"description\":\"Queue a build through the daemon intake (scan); the daemon executes detached. Records the reason in the journal.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"reason\"]}}" },
+	{ "package_bump", "{\"name\":\"package_bump\",\"description\":\"Revision bump with bumppkg guards; the reason is journaled. Never signs, publishes or installs.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"reason\"]}}" },
+	{ "checkpoint_save", "{\"name\":\"checkpoint_save\",\"description\":\"Save a pre-restart session checkpoint (journal only, active by default). Resume post-restart with checkpoint_resume.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"},\"project\":{\"type\":\"string\"},\"workstream\":{\"type\":\"string\"},\"src_commit\":{\"type\":\"string\"},\"recipe_commit\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"label\",\"body\"]}}" },
+	{ "checkpoint_resume", "{\"name\":\"checkpoint_resume\",\"description\":\"Resume a saved checkpoint by id, by label (newest), or newest overall when neither is given. Closed checkpoints stay resumable by id; checkpoint_list is the active register.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"number\"},\"label\":{\"type\":\"string\"}}}}" },
+	{ "checkpoint_list", "{\"name\":\"checkpoint_list\",\"description\":\"List the active checkpoint register (newest first, with total count). Closed work is hidden unless status is closed/all or include_closed is set.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"closed\",\"all\"]},\"project\":{\"type\":\"string\"},\"workstream\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"},\"include_closed\":{\"type\":\"boolean\"}}}}" },
+	{ "checkpoint_close", "{\"name\":\"checkpoint_close\",\"description\":\"Retire a finished checkpoint from the active register by id. Never deletes: the row stays resumable by id.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"number\"}},\"required\":[\"id\"]}}" },
+};
+#define NBASE (int)(sizeof base_tools / sizeof base_tools[0])
+
+static int is_base(const char *name) {
+	int i;
+	for (i = 0; i < NBASE; i++) {
+		if (strcmp(base_tools[i].name, name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/* Cross-checks conf.c cannot do: expose targets must be real
+ * built-ins and never the checkpoint register; external names must
+ * not shadow built-ins. Violations invalidate extensions (built-ins
+ * stay fully on) rather than failing the server. */
+static void tools_validate(ext_conf *c) {
+	int i;
+	if (!c->ok || !c->present)
+		return;
+	for (i = 0; i < c->noff; i++) {
+		if (!is_base(c->off[i]) ||
+		    strncmp(c->off[i], "checkpoint_", 11) == 0) {
+			snprintf(c->err, sizeof c->err,
+			         "expose refused for '%s'", c->off[i]);
+			c->ok = 0;
+			return;
+		}
+	}
+	for (i = 0; i < c->ntools; i++) {
+		if (is_base(c->tools[i].name)) {
+			snprintf(c->err, sizeof c->err,
+			         "external shadows builtin '%s'",
+			         c->tools[i].name);
+			c->ok = 0;
+			return;
+		}
+	}
+}
+
+static int ext_is_off(const ext_conf *c, const char *name) {
+	int i;
+	if (!c->ok)
+		return 0;
+	for (i = 0; i < c->noff; i++) {
+		if (strcmp(c->off[i], name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+void tools_list_json(gbuf *out) {
+	ext_conf conf;
+	int i, first = 1;
+	conf_load(&conf);
+	tools_validate(&conf);
+	gbuf_adds(out, "{\"tools\":[");
+	for (i = 0; i < NBASE; i++) {
+		if (ext_is_off(&conf, base_tools[i].name))
+			continue;
+		if (!first)
+			gbuf_addch(out, ',');
+		gbuf_adds(out, base_tools[i].entry);
+		first = 0;
+	}
+	if (conf.ok) {
+		for (i = 0; i < conf.ntools; i++) {
+			const ext_tool *t = &conf.tools[i];
+			gbuf d;
+			int a;
+			if (!first)
+				gbuf_addch(out, ',');
+			gbuf_init(&d);
+			gbuf_adds(&d, "External (");
+			gbuf_adds(&d, t->cls);
+			gbuf_adds(&d, "): ");
+			for (a = 0; a < t->argc; a++) {
+				if (a)
+					gbuf_addch(&d, ' ');
+				gbuf_adds(&d, t->argv[a]);
+			}
+			gbuf_adds(&d, " (tools.conf)");
+			gbuf_adds(out, "{\"name\":");
+			json_escape(out, t->name, strlen(t->name));
+			gbuf_adds(out, ",\"description\":");
+			json_escape(out, d.p ? d.p : "", d.len);
+			gbuf_adds(out, ",\"inputSchema\":"
+			               "{\"type\":\"object\",\"properties\":{}}}");
+			gbuf_free(&d);
+			first = 0;
+		}
+	}
+	gbuf_adds(out, "]}");
+	conf_free(&conf);
+}
+
+/* Registered externals take no caller arguments: the conf argv is
+ * the whole command. An author field is still honored for audit
+ * attribution when supplied. */
+static int t_external(jv *args, const ext_tool *t, gbuf *text, int *is_error) {
+	char author[128];
+	resolve_credit(args, author, sizeof author);
+	return runner_exec(t, author, journal_recorder, text, is_error);
+}
+
+/* ------------------------------------------------------------------ */
 /* dispatch                                                            */
 /* ------------------------------------------------------------------ */
 int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
 	char err[256];
+	ext_conf conf;
 	*is_error = 0;
 	if (!name)
 		return -1;
+	/* Exposure allowlist gates even built-ins: an off tool is
+	 * unknown, not failed. */
+	conf_load(&conf);
+	tools_validate(&conf);
+	if (ext_is_off(&conf, name)) {
+		conf_free(&conf);
+		return -1;
+	}
+	conf_free(&conf);
 	if (strcmp(name, "package_search") == 0)
 		return t_search(args, text, is_error, err, sizeof err);
 	if (strcmp(name, "package_info") == 0)
@@ -4309,7 +4458,22 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
 		return t_checkpoint_list(args, text, is_error, err, sizeof err);
 	if (strcmp(name, "checkpoint_close") == 0)
 		return t_checkpoint_close(args, text, is_error, err, sizeof err);
-	return -1;
+	/* Registered externals: fixed conf argv, no caller arguments. */
+	{
+		ext_conf conf2;
+		const ext_tool *e;
+		int r;
+		conf_load(&conf2);
+		tools_validate(&conf2);
+		e = conf_find(&conf2, name);
+		if (!e) {
+			conf_free(&conf2);
+			return -1;
+		}
+		r = t_external(args, e, text, is_error);
+		conf_free(&conf2);
+		return r;
+	}
 }
 
 

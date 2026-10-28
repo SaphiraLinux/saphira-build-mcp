@@ -125,7 +125,17 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 	} else if (strcmp(m, "ping") == 0) {
 		jsonrpc_result(resp, idraw, idlen, "{}");
 	} else if (strcmp(m, "tools/list") == 0) {
-		jsonrpc_result(resp, idraw, idlen, SBM_TOOLS_LIST_JSON);
+		gbuf lb;
+		gbuf_init(&lb);
+		tools_list_json(&lb);
+		if (lb.failed || !lb.p) {
+			gbuf_free(&lb);
+			jsonrpc_error(resp, idraw, idlen, -32603, "internal error");
+			jv_free(root);
+			return 1;
+		}
+		jsonrpc_result(resp, idraw, idlen, lb.p);
+		gbuf_free(&lb);
 	} else if (strcmp(m, "tools/call") == 0) {
 		jv *params = jv_get(root, "params");
 		jv *args = params ? jv_get(params, "arguments") : NULL;

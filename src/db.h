@@ -9,6 +9,7 @@
 /* Data-source paths: live-system defaults, overridable for hermetic
  * tests. Never NULL. */
 const char *env_or(const char *name, const char *dflt);
+const char *env_or(const char *name, const char *dflt);
 const char *path_recipes(void);
 const char *path_queue_db(void);
 const char *path_repo_dir(void);

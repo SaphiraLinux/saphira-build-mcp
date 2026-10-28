@@ -1,4 +1,4 @@
-.TH SAPHIRA-BUILD-MCP 1 "October 2026" "saphira-build-mcp 0.7.0" "Saphira"
+.TH SAPHIRA-BUILD-MCP 1 "October 2026" "saphira-build-mcp 0.8.0" "Saphira"
 .SH NAME
 saphira-build-mcp \- Saphira build/package queries and evidence journal
 .SH SYNOPSIS
@@ -81,11 +81,31 @@ daemon design but only queues genuinely changed work; the response
 reports what moved for the requested package. package_bump
 surfaces bumppkg guard refusals (never-published, 24h anti-loop,
 disabled) as errors, never as silent success.
+.SH EXTENSIONS
+.BR /etc/saphira/mcp/tools.conf
+declares an exposure allowlist for the built-ins and an extension
+registry of curated external commands (SBM_TOOLS_CONF overrides the
+path; a missing file means built-ins only). Grammar is strict and
+fail-closed: a malformed or unsafe line disables extensions while
+the built-ins stay fully on, and checkpoint_* tools can never be
+switched off. Registered commands run with fixed argv via execve:
+no shell exists anywhere on the path, callers pass no arguments,
+and output is capped, timed, and audited to the journal tool_runs
+table (tool, argv, agent, exit status, elapsed time). Class is read
+or test; test entries run sandboxed by default (bwrap, SBM_BWRAP to
+override).
+.PP
+Denylisted by shape: shells, interpreters, command-executing
+filters, compilers, and anything that builds, signs, publishes or
+installs, plus any path naming MCP-owned writable state. The
+runner is an additional capability, never a second route around
+build and package operations.
 .SH ENVIRONMENT
 Data-source paths default to the live system and can be pointed at
 fixtures for testing:
 .B SBM_RECIPES SBM_QUEUE_DB SBM_REPO_DIR SBM_INCOMING SBM_TSV
-.B SBM_PASSWD SBM_GROUP SBM_APKDB SBM_NOTES_DB
+.B SBM_PASSWD SBM_GROUP SBM_APKDB SBM_NOTES_DB SBM_TOOLS_CONF
+.B SBM_BWRAP
 .PP
 .B SBM_AUTHOR
 sets the default journal attribution (a per-call author field

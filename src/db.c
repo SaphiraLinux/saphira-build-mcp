@@ -60,7 +60,14 @@ static const char *notes_schema_sql =
     "status TEXT NOT NULL DEFAULT 'active',"
     "project TEXT NOT NULL DEFAULT '',workstream TEXT NOT NULL DEFAULT '',"
     "closed_at TEXT,closed_by TEXT);"
-    "CREATE INDEX IF NOT EXISTS idx_checkpoints_label ON checkpoints(label,id);";
+    "CREATE INDEX IF NOT EXISTS idx_checkpoints_label ON checkpoints(label,id);"
+    "CREATE TABLE IF NOT EXISTS tool_runs("
+    "id INTEGER PRIMARY KEY,tool TEXT NOT NULL,argv TEXT NOT NULL,"
+    "class TEXT NOT NULL,author TEXT NOT NULL,"
+    "recorder TEXT NOT NULL DEFAULT '',exit_status INTEGER NOT NULL,"
+    "elapsed_ms INTEGER NOT NULL,truncated INTEGER NOT NULL DEFAULT 0,"
+    "timed_out INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL);"
+    "CREATE INDEX IF NOT EXISTS idx_tool_runs_tool ON tool_runs(tool,id);";
 
 /* Checkpoints v2 (0.7.0): the active-by-default register. New columns
  * on the append-only checkpoints table; pre-0.7.0 rows read back as

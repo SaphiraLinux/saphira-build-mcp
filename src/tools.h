@@ -15,6 +15,12 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error);
  * unverified - attribution, never authentication. */
 void sbm_set_recorder(const char *recorder);
 
+/* Assemble the tools/list document at runtime: built-ins minus
+ * tools.conf expose-offs, plus registered externals in conf order.
+ * Without a conf (or with a bad one) this is the 22 built-ins,
+ * byte-identical to the historical static document. */
+void tools_list_json(gbuf *out);
+
 /* Build the initialize instructions: static checkpoint-register
  * guidance plus the live active set (first five plus total count).
  * Read-only against the journal; fails open to static guidance when
