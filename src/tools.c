@@ -2298,25 +2298,24 @@ static int t_identity(jv *args, gbuf *text, int *is_error, char *err, size_t err
 			gbuf_adds(text, "(registry unavailable)\n");
 		} else {
 			while (fgets(line, sizeof line, f)) {
-				char *t1, *t2, *nm;
+				char *t1, *nm;
 				size_t L = strlen(line);
 				while (L && (line[L - 1] == '\n' || line[L - 1] == '\r'))
 					line[--L] = 0;
 				if (!L || line[0] == '#')
 					continue;
-				/* registry rows are `kind\tname\t...`: the
-				 * identity is the SECOND field, not the kind. */
+				/* accounts.tsv is `name\tkind\t...` (see its
+				 * header row): the identity is the FIRST
+				 * field, unlike accounts.d fragments where
+				 * the kind comes first. */
 				t1 = strchr(line, '\t');
 				if (!t1)
 					continue;
-				nm = t1 + 1;
-				t2 = strchr(nm, '\t');
-				if (t2)
-					*t2 = 0;
+				*t1 = 0;
+				nm = line;
 				if (strcmp(nm, name) == 0 ||
 				    ident_match(idents, nidents, nm, strlen(nm))) {
-					if (t2)
-						*t2 = '\t';
+					*t1 = '\t';
 					gbuf_adds(text, line);
 					gbuf_addch(text, '\n');
 					found = 1;

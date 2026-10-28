@@ -91,9 +91,9 @@ pkgrel=1
 pkgdesc="Leaf dependency fixture"
 license="MIT"
 EOF
-printf 'user\tpkguser\t150\tpkguser\t/var/lib/pkg-a\t/sbin/nologin\t-\n' > "$FIX/accounts.tsv"
-printf 'group\tpkguser\t150\t-\t-\t-\t-\n' >> "$FIX/accounts.tsv"
-printf 'user\tsysd-x\t144\tsysd-x\t/var/empty\t/sbin/nologin\t-\tsystemd\n' >> "$FIX/accounts.tsv"
+printf 'pkguser\tuser\t150\tpkguser\t/var/lib/pkg-a\t/sbin/nologin\t-\n' > "$FIX/accounts.tsv"
+printf 'pkguser\tgroup\t150\t-\t-\t-\t-\n' >> "$FIX/accounts.tsv"
+printf 'sysd-x\tuser\t144\tsysd-x\t/var/empty\t/sbin/nologin\t-\tsystemd\n' >> "$FIX/accounts.tsv"
 printf 'pkguser:x:150:150:fixture:/var/lib/pkg-a:/sbin/nologin\nroot:x:0:0:root:/root:/bin/sh\n' > "$FIX/passwd"
 printf 'pkguser:x:150:\nroot:x:0:\n' > "$FIX/group"
 mkdir -p "$FIX/recipes/pkg-a/files/accounts.d"

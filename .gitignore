@@ -1,3 +1,5 @@
 # build outputs (hermetic `make STATIC=0` / `make test` recreate these)
 /saphira-build-mcp
 src/*.o
+# live-test journal: Egg-local operational data, never versioned
+/test-notes.db
