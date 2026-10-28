@@ -3602,6 +3602,239 @@ static int t_package_bump(jv *args, gbuf *text, int *is_error, char *err, size_t
 }
 
 /* ------------------------------------------------------------------ */
+/* checkpoint_save / checkpoint_resume                                 */
+/* ------------------------------------------------------------------ */
+#define CHECKPOINT_LABEL_CAP 64
+#define CHECKPOINT_BODY_CAP 16384
+
+/* A checkpoint is a pre-restart write meant to be consumed post-restart:
+ * "resume from checkpoint <id|label>" must restore exactly what the
+ * previous session knew. The body carries the narrative (state, next
+ * action, blockers); label groups retries of one line of work; commits
+ * pin the tree. 16 KiB body cap: a proper checkpoint does not fit in a
+ * 4 KiB note. Commits are 40-hex when supplied, informational otherwise. */
+static int is_hex40(const char *s) {
+	size_t i;
+	if (strlen(s) != 40)
+		return 0;
+	for (i = 0; i < 40; i++) {
+		if (!isxdigit((unsigned char)s[i]))
+			return 0;
+	}
+	return 1;
+}
+
+static int t_checkpoint_save(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *label, *title, *body, *pkg, *aa, *src, *rcp;
+	char author[CREDIT_CAP + 1], dberr[256], now[21];
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	int rc;
+	(void)err;
+	(void)errsz;
+	label = arg_str(args, "label");
+	body = arg_str(args, "body");
+	title = arg_str(args, "title");
+	pkg = arg_str(args, "package");
+	aa = arg_str(args, "author");
+	src = arg_str(args, "src_commit");
+	rcp = arg_str(args, "recipe_commit");
+	if (!label || !label[0] || !body)
+		return -1;
+	if (!title)
+		title = "";
+	if (!pkg)
+		pkg = "";
+	if (strlen(label) > CHECKPOINT_LABEL_CAP ||
+	    strlen(title) > NOTE_TITLE_CAP || strlen(body) > CHECKPOINT_BODY_CAP)
+		return -1;
+	if (aa && strlen(aa) > CREDIT_CAP)
+		return -1;
+	if (src && src[0] && !is_hex40(src))
+		return -1;
+	if (rcp && rcp[0] && !is_hex40(rcp))
+		return -1;
+	resolve_credit(args, author, sizeof author);
+	db = db_open_notes(dberr, sizeof dberr);
+	if (!db) {
+		*is_error = 1;
+		gbuf_adds(text, "journal unavailable: ");
+		gbuf_adds(text, dberr);
+		gbuf_addch(text, '\n');
+		prov(text, "notes.db (local journal)");
+		return 0;
+	}
+	utc_now(now);
+	rc = sqlite3_prepare_v2(db,
+	    "INSERT INTO checkpoints(label,package,title,body,author,recorder,"
+	    "src_commit,recipe_commit,created_at)"
+	    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", -1, &st, NULL);
+	if (rc == SQLITE_OK) {
+		sqlite3_bind_text(st, 1, label, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 2, pkg, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 3, title, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 4, body, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 5, author, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 6, journal_recorder, -1, SQLITE_TRANSIENT);
+		if (src && src[0])
+			sqlite3_bind_text(st, 7, src, -1, SQLITE_TRANSIENT);
+		else
+			sqlite3_bind_null(st, 7);
+		if (rcp && rcp[0])
+			sqlite3_bind_text(st, 8, rcp, -1, SQLITE_TRANSIENT);
+		else
+			sqlite3_bind_null(st, 8);
+		sqlite3_bind_text(st, 9, now, -1, SQLITE_TRANSIENT);
+		rc = sqlite3_step(st);
+	}
+	if (rc == SQLITE_DONE) {
+		char tmp[192];
+		snprintf(tmp, sizeof tmp, "recorded checkpoint %lld (label '%s')\n",
+		         (long long)sqlite3_last_insert_rowid(db), label);
+		gbuf_adds(text, tmp);
+	} else {
+		*is_error = 1;
+		gbuf_adds(text, "journal write failed\n");
+	}
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+	prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* Print one checkpoint row in full: consumption, not preview. A resumed
+ * session needs the whole narrative, so the body is never truncated
+ * (the 256 KiB result cap bounds abuse, not this reader). */
+static void print_checkpoint(gbuf *text, sqlite3_stmt *st) {
+	char tmp[128];
+	snprintf(tmp, sizeof tmp, "checkpoint [%lld] (label '",
+	         (long long)sqlite3_column_int64(st, 0));
+	gbuf_adds(text, tmp);
+	sb_cell(text, st, 1);
+	gbuf_adds(text, "') ");
+	sb_cell(text, st, 8);
+	gbuf_adds(text, " by ");
+	sb_cell(text, st, 5);
+	if (sqlite3_column_type(st, 6) != SQLITE_NULL &&
+	    sqlite3_column_text(st, 6)[0]) {
+		gbuf_adds(text, " recorder=");
+		sb_cell(text, st, 6);
+	}
+	gbuf_addch(text, '\n');
+	if (sqlite3_column_type(st, 2) != SQLITE_NULL &&
+	    sqlite3_column_text(st, 2)[0]) {
+		gbuf_adds(text, "  scope: ");
+		sb_cell(text, st, 2);
+		gbuf_addch(text, '\n');
+	} else {
+		gbuf_adds(text, "  scope: (session-global)\n");
+	}
+	if (sqlite3_column_type(st, 3) != SQLITE_NULL &&
+	    sqlite3_column_text(st, 3)[0]) {
+		gbuf_adds(text, "  title: ");
+		gbuf_adds(text, (const char *)sqlite3_column_text(st, 3));
+		gbuf_addch(text, '\n');
+	}
+	if (sqlite3_column_type(st, 7) != SQLITE_NULL) {
+		gbuf_adds(text, "  src_commit: ");
+		sb_cell(text, st, 7);
+		gbuf_addch(text, '\n');
+	}
+	if (sqlite3_column_type(st, 9) != SQLITE_NULL) {
+		gbuf_adds(text, "  recipe_commit: ");
+		sb_cell(text, st, 9);
+		gbuf_addch(text, '\n');
+	}
+	gbuf_adds(text, "  body:\n");
+	indented(text, (const char *)sqlite3_column_text(st, 4));
+}
+
+static int t_checkpoint_resume(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *label;
+	long id;
+	int bad = 0;
+	char dberr[256];
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	int rc, found = 0;
+	(void)err;
+	(void)errsz;
+	label = arg_str(args, "label");
+	id = arg_long(args, "id", -1, &bad);
+	if (bad)
+		return -1;
+	if (id != -1 && id <= 0)
+		return -1;
+	db = db_open_notes(dberr, sizeof dberr);
+	if (!db) {
+		*is_error = 1;
+		gbuf_adds(text, "journal unavailable: ");
+		gbuf_adds(text, dberr);
+		gbuf_addch(text, '\n');
+		prov(text, "notes.db (local journal)");
+		return 0;
+	}
+	/* Columns: 0 id, 1 label, 2 package, 3 title, 4 body, 5 author,
+	 * 6 recorder, 7 src_commit, 8 created_at, 9 recipe_commit. */
+	if (id != -1) {
+		rc = sqlite3_prepare_v2(db,
+		    "SELECT id,label,package,title,body,author,recorder,"
+		    "src_commit,created_at,recipe_commit"
+		    " FROM checkpoints WHERE id=?1", -1, &st, NULL);
+		if (rc == SQLITE_OK) {
+			sqlite3_bind_int64(st, 1, (long long)id);
+			if (sqlite3_step(st) == SQLITE_ROW)
+				found = 1;
+		}
+		if (!found) {
+			char tmp[64];
+			snprintf(tmp, sizeof tmp, "no such checkpoint %ld\n", id);
+			*is_error = 1;
+			gbuf_adds(text, tmp);
+		}
+	} else if (label && label[0]) {
+		rc = sqlite3_prepare_v2(db,
+		    "SELECT id,label,package,title,body,author,recorder,"
+		    "src_commit,created_at,recipe_commit"
+		    " FROM checkpoints WHERE label=?1 ORDER BY id DESC LIMIT 1",
+		    -1, &st, NULL);
+		if (rc == SQLITE_OK) {
+			sqlite3_bind_text(st, 1, label, -1, SQLITE_TRANSIENT);
+			if (sqlite3_step(st) == SQLITE_ROW)
+				found = 1;
+		}
+		if (!found) {
+			*is_error = 1;
+			gbuf_adds(text, "no checkpoints for label '");
+			gbuf_adds(text, label);
+			gbuf_adds(text, "'\n");
+		}
+	} else {
+		rc = sqlite3_prepare_v2(db,
+		    "SELECT id,label,package,title,body,author,recorder,"
+		    "src_commit,created_at,recipe_commit"
+		    " FROM checkpoints ORDER BY id DESC LIMIT 1",
+		    -1, &st, NULL);
+		if (rc == SQLITE_OK) {
+			if (sqlite3_step(st) == SQLITE_ROW)
+				found = 1;
+		}
+		if (!found)
+			gbuf_adds(text, "(no checkpoints recorded)\n");
+	}
+	if (found)
+		print_checkpoint(text, st);
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+	prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* dispatch                                                            */
 /* ------------------------------------------------------------------ */
 int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
@@ -3645,6 +3878,10 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
 		return t_build_request(args, text, is_error, err, sizeof err);
 	if (strcmp(name, "package_bump") == 0)
 		return t_package_bump(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "checkpoint_save") == 0)
+		return t_checkpoint_save(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "checkpoint_resume") == 0)
+		return t_checkpoint_resume(args, text, is_error, err, sizeof err);
 	return -1;
 }
 

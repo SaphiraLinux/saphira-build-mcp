@@ -236,7 +236,7 @@ t_contains "initialize names server" "$out" '"name":"saphira-build-mcp"'
 out=$(mcp '{"jsonrpc":"2.0","id":2,"method":"ping"}')
 t_contains "ping empty result" "$out" '"result":{}'
 out=$(mcp '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')
-for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness build_request package_bump; do
+for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness build_request package_bump checkpoint_save checkpoint_resume; do
 	t_contains "tools/list has $tool" "$out" "\"name\":\"$tool\""
 done
 out=$(mcp '{"jsonrpc":"2.0","id":4,"method":"nope"}')
@@ -423,6 +423,60 @@ t_contains "bump disabled isError" "$out" '"isError":true'
 out=$(mcp '{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"package_build_status","arguments":{"name":"pkg-s"}}}')
 t_contains "status awaiting signing" "$out" "AWAITING SIGNING"
 t_contains "status names sign ask" "$out" "sudo sign-apk-repo pkg-s"
+
+# --- checkpoints: pre-restart save, post-restart resume ---------------
+# empty journal first: nothing saved yet
+out=$(mcp '{"jsonrpc":"2.0","id":71,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{}}}')
+t_contains "checkpoint resume empty" "$out" "(no checkpoints recorded)"
+out=$(mcp '{"jsonrpc":"2.0","id":72,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"label":"nope"}}}')
+t_contains "checkpoint resume unknown label isError" "$out" '"isError":true'
+t_contains "checkpoint resume unknown label" "$out" "no checkpoints for label"
+out=$(mcp '{"jsonrpc":"2.0","id":73,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":99}}}')
+t_contains "checkpoint resume unknown id isError" "$out" '"isError":true'
+t_contains "checkpoint resume unknown id" "$out" "no such checkpoint 99"
+# save minimal (session-global scope), then full, then a same-label retry
+out=$(mcp '{"jsonrpc":"2.0","id":74,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"pre-restart","body":"state: Master 1c1f304, queue empty\nnext: cut 0.4.0 release"}}}')
+t_contains "checkpoint save minimal" "$out" "recorded checkpoint 1 (label 'pre-restart')"
+out=$(mcp '{"jsonrpc":"2.0","id":75,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"pre-restart","title":"0.4.0 ready to cut","body":"all green","package":"pkg-a","src_commit":"0123456789abcdef0123456789abcdef01234567","recipe_commit":"abcdef0123456789abcdef0123456789abcdef01","author":"ada"}}}')
+t_contains "checkpoint save full" "$out" "recorded checkpoint 2 (label 'pre-restart')"
+out=$(mcp '{"jsonrpc":"2.0","id":76,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"pre-restart","body":"retry after restart"}}}')
+t_contains "checkpoint save same label" "$out" "recorded checkpoint 3 (label 'pre-restart')"
+# resume paths: by id, by label (newest), neither (newest), id wins
+out=$(mcp '{"jsonrpc":"2.0","id":77,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":2}}}')
+t_contains "checkpoint resume id" "$out" "checkpoint [2]"
+t_contains "checkpoint resume title" "$out" "0.4.0 ready to cut"
+t_contains "checkpoint resume scope" "$out" "pkg-a"
+t_contains "checkpoint resume commits" "$out" "src_commit: 0123456789abcdef0123456789abcdef01234567"
+t_contains "checkpoint resume author" "$out" "by ada"
+out=$(mcp '{"jsonrpc":"2.0","id":78,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"label":"pre-restart"}}}')
+t_contains "checkpoint resume label newest" "$out" "checkpoint [3]"
+t_contains "checkpoint resume label body" "$out" "retry after restart"
+out=$(mcp '{"jsonrpc":"2.0","id":79,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{}}}')
+t_contains "checkpoint resume newest overall" "$out" "checkpoint [3]"
+out=$(mcp '{"jsonrpc":"2.0","id":80,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":1,"label":"pre-restart"}}}')
+t_contains "checkpoint resume id wins" "$out" "checkpoint [1]"
+t_contains "checkpoint resume global scope" "$out" "scope: (session-global)"
+t_contains "checkpoint resume multiline" "$out" "next: cut 0.4.0 release"
+# bodies larger than the 4 KiB note cap fit: 5 KiB round-trips in full
+bigbody=$(python3 -c "print('z: checkpoint payload ' + 'z'*4900 + ' tail-marker')")
+out=$(mcp '{"jsonrpc":"2.0","id":81,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"big","body":"'"$bigbody"'"}}}')
+t_contains "checkpoint save 5k body" "$out" "recorded checkpoint 4 (label 'big')"
+out=$(mcp '{"jsonrpc":"2.0","id":82,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":4}}}')
+t_contains "checkpoint resume 5k round-trip" "$out" "tail-marker"
+# invalid inputs are transport errors, never journal writes
+out=$(mcp '{"jsonrpc":"2.0","id":83,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"body":"no label"}}}')
+t_contains "checkpoint save missing label -32602" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":84,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"x"}}}')
+t_contains "checkpoint save missing body -32602" "$out" '"code":-32602'
+hugebody=$(python3 -c "print('q' * 17000)")
+out=$(mcp '{"jsonrpc":"2.0","id":85,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"huge","body":"'"$hugebody"'"}}}')
+t_contains "checkpoint save oversize body -32602" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":86,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"x","body":"y","src_commit":"not-hex"}}}')
+t_contains "checkpoint save bad commit -32602" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":87,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":0}}}')
+t_contains "checkpoint resume id zero -32602" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":88,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":"two"}}}')
+t_contains "checkpoint resume id type -32602" "$out" '"code":-32602'
 
 # --- framing: every stdout line is valid JSON ---------------------------
 mcp '{"jsonrpc":"2.0","id":30,"method":"tools/list"}' '{"jsonrpc":"2.0","id":31,"method":"ping"}' > "$ROOT/frames.txt"

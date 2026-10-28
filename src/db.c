@@ -51,7 +51,13 @@ static const char *notes_schema_sql =
     "author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',"
     "created_at TEXT NOT NULL,supersedes_id INTEGER);"
     "CREATE INDEX IF NOT EXISTS idx_notes_pkg ON notes(package,id);"
-    "CREATE INDEX IF NOT EXISTS idx_policy_pkg ON policy_records(package,check_name,id);";
+    "CREATE INDEX IF NOT EXISTS idx_policy_pkg ON policy_records(package,check_name,id);"
+    "CREATE TABLE IF NOT EXISTS checkpoints("
+    "id INTEGER PRIMARY KEY,label TEXT NOT NULL,"
+    "package TEXT NOT NULL DEFAULT '',title TEXT NOT NULL DEFAULT '',"
+    "body TEXT NOT NULL,author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',"
+    "src_commit TEXT,recipe_commit TEXT,created_at TEXT NOT NULL);"
+    "CREATE INDEX IF NOT EXISTS idx_checkpoints_label ON checkpoints(label,id);";
 
 sqlite3 *db_open_notes(char *err, size_t errsz) {
 	sqlite3 *db = NULL;
