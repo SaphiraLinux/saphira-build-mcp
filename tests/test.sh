@@ -350,6 +350,19 @@ t "journal append-only" "$n_after" "$((n_before + 1))" "$((n_before + 1))"
 out=$(mcp '{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"package_policy_status","arguments":{"package":"pkg-a"}}}')
 t_contains "policy status current again" "$out" "unix-identity: PASS CURRENT"
 t_contains "policy status newest record" "$out" "(record 2,"
+# reflective kinds: judged outcomes and carry-forward, not open questions
+out=$(mcp '{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"success","title":"mcp-queued build worked","body":"build_request row detached, no shell buildpkg needed"}}}' )
+t_contains "notes add success" "$out" "recorded note 4 for pkg-a"
+out=$(mcp '{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"failure","title":"bumped empty revision","body":"wrong call: recipe already equalled published, minted churn"}}}' )
+t_contains "notes add failure" "$out" "recorded note 5 for pkg-a"
+out=$(mcp '{"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"lesson","title":"check published first","body":"next time, compare recipe against repository newest before any bump"}}}' )
+t_contains "notes add lesson" "$out" "recorded note 6 for pkg-a"
+out=$(mcp '{"jsonrpc":"2.0","id":103,"method":"tools/call","params":{"name":"package_notes_get","arguments":{"package":"pkg-a","kind":"lesson"}}}')
+t_contains "notes get lesson filter" "$out" "check published first"
+t_contains "notes get lesson count" "$out" "(showing 1)"
+out=$(mcp '{"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"package_readiness","arguments":{"package":"pkg-a"}}}')
+t_contains "readiness counts only issues as open" "$out" "notes: 6 (1 open issue)"
+t_contains "readiness recent surfaces lesson" "$out" "check published first"
 # invalid inputs are transport errors, never journal writes
 out=$(mcp '{"jsonrpc":"2.0","id":52,"method":"tools/call","params":{"name":"package_policy_record","arguments":{"package":"pkg-a","check":"no-such-check","result":"PASS","evidence":{"x":true}}}}')
 t_contains "policy bad check -32602" "$out" '"code":-32602'
