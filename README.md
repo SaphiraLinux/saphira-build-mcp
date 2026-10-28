@@ -116,6 +116,14 @@ for testing:
 `SBM_PASSWD` `SBM_GROUP` `SBM_APKDB` `SBM_NOTES_DB` (`SBM_AUTHOR`
 for journal attribution)
 
+## Canonical builds
+
+Release tarballs here are source snapshots only. Canonical builds
+pull the tarball and compile under `/build` as part of a valid
+Saphira recipe (`buildpkg`, Bubblewrap sandbox, scratch under
+`SAPHIRA_TMPDIR`). Nothing in this repository builds on GitHub;
+there are no workflows, and none are wanted.
+
 ## Licence
 
 Saphira-owned code under BUSL-1.1 (see LICENSE). Vendored JSON
