@@ -1481,6 +1481,45 @@ done_why:
 	return 0;
 }
 
+/* Baseline coverage line: which SBU baselines are active for a
+ * package, or an explicit statement that none is. Silence here once
+ * hid a completely empty baseline table: every history rendered
+ * without SBU ratios and nothing said why. */
+static void sbu_baseline_line(sqlite3 *db, const char *pkg, gbuf *text) {
+	sqlite3_stmt *st = NULL;
+	int rows = 0;
+	if (sqlite3_prepare_v2(db,
+	    "SELECT cache_policy,wall_s,arch,builder_host,calibrated_at"
+	    " FROM sbu_baseline WHERE package=?1 AND active=1"
+	    " ORDER BY arch,builder_host", -1, &st, NULL) != SQLITE_OK)
+		return;
+	sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+	while (sqlite3_step(st) == SQLITE_ROW) {
+		char tmp[128];
+		if (!rows)
+			gbuf_adds(text, "SBU baseline:");
+		gbuf_adds(text, " ");
+		sb_cell(text, st, 0);
+		snprintf(tmp, sizeof tmp, " %.1fs wall (",
+		         sqlite3_column_double(st, 1));
+		gbuf_adds(text, tmp);
+		sb_cell(text, st, 2);
+		gbuf_addch(text, '/');
+		sb_cell(text, st, 3);
+		gbuf_adds(text, ", calibrated ");
+		sb_cell(text, st, 4);
+		gbuf_addch(text, ')');
+		gbuf_addch(text, '\n');
+		rows++;
+	}
+	sqlite3_finalize(st);
+	if (!rows) {
+		gbuf_adds(text, "SBU baseline: none active for ");
+		gbuf_adds(text, pkg);
+		gbuf_adds(text, " (SBU omitted; calibrate to establish)\n");
+	}
+}
+
 /* ------------------------------------------------------------------ */
 /* shared build-row rendering                                          */
 /* ------------------------------------------------------------------ */
@@ -1758,6 +1797,7 @@ static int t_status(jv *args, gbuf *text, int *is_error, char *err, size_t errsz
 		gbuf_adds(text, name);
 		gbuf_addch(text, '\n');
 	}
+	sbu_baseline_line(db, name, text);
 	sqlite3_finalize(st);
 	sqlite3_close(db);
 	prov(text, "build queue");
@@ -1830,6 +1870,7 @@ static int t_history(jv *args, gbuf *text, int *is_error, char *err, size_t errs
 		snprintf(tmp, sizeof tmp, "(showing %ld)\n", shown);
 		gbuf_adds(text, tmp);
 	}
+	sbu_baseline_line(db, name, text);
 	sqlite3_finalize(st);
 	sqlite3_close(db);
 	prov(text, "build queue");

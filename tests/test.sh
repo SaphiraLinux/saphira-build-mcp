@@ -285,6 +285,9 @@ t_contains "status refused" "$out" "REFUSED"
 out=$(mcp '{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"package_build_history","arguments":{"name":"pkg-a","limit":5}}}')
 t_contains "history fail stage" "$out" "INSTALL:"
 t_contains "history shows count" "$out" "(showing 2)"
+t_contains "history shows baseline" "$out" "SBU baseline: cold 5.0s wall (x86_64/egg"
+out=$(mcp '{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"package_build_status","arguments":{"name":"pkg-c"}}}')
+t_contains "status no baseline line" "$out" "SBU baseline: none active for pkg-c"
 out=$(mcp '{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"package_build_log","arguments":{"name":"pkg-a","stage":"build"}}}')
 t_contains "log content" "$out" "build log line 1"
 out=$(mcp '{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"package_build_log","arguments":{"name":"pkg-a","stage":"install","tail_bytes":10}}}')
