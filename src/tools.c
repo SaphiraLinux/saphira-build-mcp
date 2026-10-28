@@ -2840,6 +2840,13 @@ static int t_policy_record(jv *args, gbuf *text, int *is_error, char *err, size_
 		memcpy(evcopy, ev->raw, ev->rawlen);
 		evcopy[ev->rawlen] = 0;
 	}
+	/* A PASS without evidence is an attestation of confidence, not a
+	 * verified check: refuse it. (Presence is enforceable; truth is
+	 * the author's - the author field says who claims it.) A FAIL
+	 * needs no evidence object: the failure itself is the record,
+	 * with detail living in build logs and notes. */
+	if (strcmp(result, "PASS") == 0 && !evcopy)
+		return -1;
 	resolve_credit(args, author, sizeof author);
 	current_pins(pkg, &pins);
 	db = db_open_notes(dberr, sizeof dberr);

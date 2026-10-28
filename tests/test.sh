@@ -297,12 +297,18 @@ out=$(mcp '{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"pack
 t_contains "policy status current again" "$out" "unix-identity: PASS CURRENT"
 t_contains "policy status newest record" "$out" "(record 2,"
 # invalid inputs are transport errors, never journal writes
-out=$(mcp '{"jsonrpc":"2.0","id":52,"method":"tools/call","params":{"name":"package_policy_record","arguments":{"package":"pkg-a","check":"no-such-check","result":"PASS"}}}')
+out=$(mcp '{"jsonrpc":"2.0","id":52,"method":"tools/call","params":{"name":"package_policy_record","arguments":{"package":"pkg-a","check":"no-such-check","result":"PASS","evidence":{"x":true}}}}')
 t_contains "policy bad check -32602" "$out" '"code":-32602'
-out=$(mcp '{"jsonrpc":"2.0","id":53,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"nope","body":"x"}}}')
+# a PASS with no evidence object is confidence, not verification
+out=$(mcp '{"jsonrpc":"2.0","id":53,"method":"tools/call","params":{"name":"package_policy_record","arguments":{"package":"pkg-a","check":"payload-layout","result":"PASS"}}}')
+t_contains "policy PASS without evidence -32602" "$out" '"code":-32602'
+# a FAIL needs no evidence object: the failure is the record
+out=$(mcp '{"jsonrpc":"2.0","id":54,"method":"tools/call","params":{"name":"package_policy_record","arguments":{"package":"pkg-a","check":"payload-layout","result":"FAIL"}}}')
+t_contains "policy FAIL without evidence stored" "$out" "recorded payload-layout=FAIL for pkg-a"
+out=$(mcp '{"jsonrpc":"2.0","id":55,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"nope","body":"x"}}}')
 t_contains "notes bad kind -32602" "$out" '"code":-32602'
 big=$(python3 -c "print('x' * 5000)")
-out=$(mcp '{"jsonrpc":"2.0","id":54,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"finding","body":"'"$big"'"}}}')
+out=$(mcp '{"jsonrpc":"2.0","id":56,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"finding","body":"'"$big"'"}}}')
 t_contains "notes oversize body -32602" "$out" '"code":-32602'
 
 # --- framing: every stdout line is valid JSON ---------------------------
