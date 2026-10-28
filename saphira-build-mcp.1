@@ -25,13 +25,18 @@ With
 .B --list-tools
 it prints the tools/list document (also the build-time self-check).
 .SH TOOLS
-Sixteen tools. Fourteen are read-only: package_search,
+Eighteen tools. Fourteen are read-only: package_search,
 package_info, package_dependencies, package_why_installed,
 package_installed, package_build_status, package_build_history,
 package_build_log, package_artifacts, build_queue,
 package_identity, package_notes_get, package_policy_status,
-package_readiness. Two write only to the journal:
-package_notes_add and package_policy_record. Every result ends
+package_readiness. Four take action with deliberately narrow
+authority: package_notes_add and package_policy_record write only
+to the journal; build_request queues through the daemon intake
+(the daemon executes detached, the MCP never runs buildpkg);
+package_bump runs bumppkg guards and all. None can sign, publish
+or install: a staged row names the exact human-gated ask
+(`sudo sign-apk-repo <pkg>`). Every result ends
 with a [src: ...] provenance line naming the files read.
 .PP
 Policy records pin the revisions they were verified against
@@ -55,6 +60,15 @@ Journal attribution comes from $SBM_AUTHOR (or the per-call author
 field, defaulting to "unspecified"): attribution, not
 authentication. The recorder field is MCP clientInfo metadata:
 client-reported and unverified.
+.PP
+Action tools require a reason (max 512 bytes) and journal it
+automatically alongside the outcome: package_bump records why a
+revision moved, build_request records why a build was queued.
+build_request runs `saphira-build scan`, which is tree-wide by
+daemon design but only queues genuinely changed work; the response
+reports what moved for the requested package. package_bump
+surfaces bumppkg guard refusals (never-published, 24h anti-loop,
+disabled) as errors, never as silent success.
 .SH ENVIRONMENT
 Data-source paths default to the live system and can be pointed at
 fixtures for testing:

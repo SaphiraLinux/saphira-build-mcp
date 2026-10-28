@@ -8,7 +8,10 @@ Egg-local evidence journal (package notes and policy records with
 freshness pins), so the next agent inherits verified findings
 instead of rediscovering them.
 
-No build, sign, publish, install or restart surface exists by design.
+No signing, publication, installation or restart surface exists by
+design: builds queue for the daemon, bumps carry bumppkg's guards,
+and a staged package names the human-gated `sudo sign-apk-repo`
+ask instead of performing it.
 Missing data sources produce explicit errors, never invented results.
 
 ## Build and test
@@ -19,10 +22,11 @@ make test STATIC=0
 ```
 
 `make test` runs hermetic `tests/test.sh`: fixture recipe tree,
-queue/repository databases, retained logs, a fake `apk` on PATH, a
-scratch journal database, and scripted JSON-RPC sessions. 79 checks,
-including SQLite read-only proof (authoritative fixture DB hashes
-byte-identical before and after journal writes).
+queue/repository databases, retained logs, fake `apk`, `saphira-build`
+and `bumppkg` doubles on PATH, a scratch journal database, and
+scripted JSON-RPC sessions. 104 checks, including SQLite discipline
+proof (repository DB byte-identical throughout; queue deltas and
+journal growth asserted exactly where the action tools run).
 
 ## Protocol
 
@@ -37,8 +41,11 @@ Sixteen tools. Fourteen read-only: `package_search`, `package_info`,
 `package_build_status`, `package_build_history`, `package_build_log`,
 `package_artifacts`, `build_queue`, `package_identity`,
 `package_notes_get`, `package_policy_status`, `package_readiness`.
-Two write only to the journal: `package_notes_add`,
-`package_policy_record`.
+Four take narrowly-scoped action: `package_notes_add` and
+`package_policy_record` write only to the journal; `build_request`
+queues through the daemon intake (the daemon executes detached —
+the MCP never runs buildpkg itself); `package_bump` runs the
+bumppkg guards. Nothing here can sign, publish or install.
 
 Disabled recipes are excluded unless `include_disabled` is set.
 

@@ -56,7 +56,7 @@ cleanup() {
 	rm -rf "$ROOT"
 }
 trap cleanup EXIT INT TERM
-mkdir -p "$FIX/recipes/pkg-a" "$FIX/recipes/pkg-b" "$FIX/recipes/pkg-c"
+mkdir -p "$FIX/recipes/pkg-a" "$FIX/recipes/pkg-b" "$FIX/recipes/pkg-c" "$FIX/recipes/pkg-s"
 mkdir -p "$FIX/repo" "$FIX/incoming" "$FIX/bin" "$FIX/logs/pkg-a"
 
 [ -x "$BIN" ] || fail "not executable: $BIN (run make first or set SBM_BIN)"
@@ -91,6 +91,13 @@ pkgrel=1
 pkgdesc="Leaf dependency fixture"
 license="MIT"
 EOF
+cat > "$FIX/recipes/pkg-s/recipe.sh" <<'EOF'
+pkgname=pkg-s
+pkgver=1.0
+pkgrel=1
+pkgdesc="Staged but unsigned fixture"
+license="MIT"
+EOF
 printf 'pkguser\tuser\t150\tpkguser\t/var/lib/pkg-a\t/sbin/nologin\t-\n' > "$FIX/accounts.tsv"
 printf 'pkguser\tgroup\t150\t-\t-\t-\t-\n' >> "$FIX/accounts.tsv"
 printf 'sysd-x\tuser\t144\tsysd-x\t/var/empty\t/sbin/nologin\t-\tsystemd\n' >> "$FIX/accounts.tsv"
@@ -116,7 +123,8 @@ INSERT INTO builds(package,version,revision,state,result_json,duration_s,cpu_s,p
 ('pkg-a','1.0',2,'PASS','{"attempt": null}',10.0,8.0,100.0,'x86_64','egg','2026-10-28T00:00:01Z','2026-10-28T00:00:02Z','2026-10-28T00:00:12Z','2026-10-28T00:01:00Z','LOGDIR'),
 ('pkg-a','1.0',1,'FAIL','{"attempt": "build", "stages": {"BUILD": {"status": "pass", "detail": "buildpkg rc=0"}, "INSTALL": {"status": "fail", "detail": "post-install exit 1"}}}',30.0,20.0,200.0,'x86_64','egg','2026-10-27T23:00:01Z','2026-10-27T23:00:02Z','2026-10-27T23:00:32Z',NULL,'LOGDIR'),
 ('pkg-b','0.5',1,'FAIL','{"attempt": "refusal", "stages": {"BUILD": {"status": "fail", "detail": "plan refused"}}}',1.0,0.3,27.5,'x86_64','egg','2026-10-28T00:00:01Z','2026-10-28T00:00:02Z','2026-10-28T00:00:03Z',NULL,NULL),
-('pkg-c','2.0',1,'BUILDING',NULL,NULL,NULL,NULL,'x86_64','egg','2026-10-28T00:00:01Z','2026-10-28T00:00:02Z',NULL,NULL,NULL);
+('pkg-c','2.0',1,'BUILDING',NULL,NULL,NULL,NULL,'x86_64','egg','2026-10-28T00:00:01Z','2026-10-28T00:00:02Z',NULL,NULL,NULL),
+('pkg-s','1.0',1,'PASS','{"attempt": null}',5.0,4.0,50.0,'x86_64','egg','2026-10-28T00:00:01Z','2026-10-28T00:00:02Z','2026-10-28T00:00:12Z',NULL,'LOGDIR');
 INSERT INTO sbu_baseline(package,version,revision,arch,builder_host,cache_policy,wall_s,cpu_s,active,calibrated_at) VALUES
 ('pkg-a','1.0',2,'x86_64','egg','cold',5.0,4.0,1,'2026-10-28T00:00:00Z');
 SQL
@@ -177,10 +185,47 @@ digraph "apkindex" {
   "top-9.9-r9" -> "pkg-a-1.0-r2"[];
 }
 EOF
+
+# --- fake builder frontends on PATH (argv-checked doubles) -----------
+cat > "$FIX/bin/saphira-build" <<EOF
+#!/bin/sh
+# Test double: only 'scan'. Emulates the daemon intake by inserting
+# one QUEUED row for pkg-a, and records its argv for assertions.
+echo "\$@" >> "\$SBM_TESTFIX/scan-argv.log"
+if [ "\$1" = "scan" ]; then
+	sqlite3 "\$SBM_QUEUE_DB" "INSERT INTO builds(package,version,revision,state,queued_at) VALUES('pkg-a','1.0','2','QUEUED','2026-10-28T00:00:00Z');"
+	echo "scan: 1 newly queued, 0 left failed, 0 already proven/current"
+	echo "queue: 1 ready, 0 blocked"
+	exit 0
+fi
+echo "mock saphira-build: unknown invocation" >&2
+exit 1
+EOF
+chmod +x "$FIX/bin/saphira-build"
+cat > "$FIX/bin/bumppkg" <<EOF
+#!/bin/sh
+# Test double: 'bumppkg --yes PKG'. Refuses pkg-c (guard path).
+echo "\$@" >> "\$SBM_TESTFIX/bump-argv.log"
+if [ "\$1" = "--yes" ] && [ "\$2" = "pkg-c" ]; then
+	echo "bumppkg: refused pkg-c: anti-loop test guard" >&2
+	exit 1
+fi
+if [ "\$1" = "--yes" ] && [ -n "\$2" ]; then
+	echo "bumppkg: bumped \$2 (test double); ledger updated"
+	exit 0
+fi
+echo "mock bumppkg: unknown invocation" >&2
+exit 1
+EOF
+chmod +x "$FIX/bin/bumppkg"
 t "fixture binary runs" "0" "$("$BIN" --list-tools >/dev/null 2>&1; echo $?)" "0"
 
-# read-only proof: hash every fixture DB before any MCP traffic
-H1=$(sha256sum "$FIX/queue.db" "$FIX/repo/repository.db" | sha256sum | cut -d' ' -f1)
+# read-only proof: hash every fixture DB before any MCP traffic.
+# repository.db must stay byte-identical throughout (nothing the MCP
+# does writes it); queue.db legitimately gains rows once the action
+# tools run, so its pre/post shape is asserted separately below.
+H1Q=$(sha256sum "$FIX/queue.db" | cut -d' ' -f1)
+H1R=$(sha256sum "$FIX/repo/repository.db" | cut -d' ' -f1)
 
 mcp() { printf '%s\n' "$@" | "$BIN" --mcp 2>/dev/null; }
 
@@ -191,7 +236,7 @@ t_contains "initialize names server" "$out" '"name":"saphira-build-mcp"'
 out=$(mcp '{"jsonrpc":"2.0","id":2,"method":"ping"}')
 t_contains "ping empty result" "$out" '"result":{}'
 out=$(mcp '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')
-for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness; do
+for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness build_request package_bump; do
 	t_contains "tools/list has $tool" "$out" "\"name\":\"$tool\""
 done
 out=$(mcp '{"jsonrpc":"2.0","id":4,"method":"nope"}')
@@ -313,6 +358,52 @@ big=$(python3 -c "print('x' * 5000)")
 out=$(mcp '{"jsonrpc":"2.0","id":56,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"finding","body":"'"$big"'"}}}')
 t_contains "notes oversize body -32602" "$out" '"code":-32602'
 
+# --- action tools: build_request + package_bump ----------------------
+# These legitimately change state (queue rows via the intake double,
+# journal decision notes), so the read-only proof below covers the
+# repository DB only; queue deltas are asserted exactly here instead.
+q_before=$(sqlite3 "$FIX/queue.db" "SELECT COUNT(*) FROM builds WHERE package='pkg-a';")
+out=$(mcp '{"jsonrpc":"2.0","id":60,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a","reason":"verify journal flow"}}}')
+t_contains "build request queued" "$out" "queued row"
+t_contains "build request journaled" "$out" "note "
+t_contains "build request reason kept" "$out" "verify journal flow"
+t_contains "scan argv is bare scan" "$(cat "$FIX/scan-argv.log")" "scan"
+q_after=$(sqlite3 "$FIX/queue.db" "SELECT COUNT(*) FROM builds WHERE package='pkg-a';")
+t "scan queued exactly one row" "$q_after" "$((q_before + 1))" "$((q_before + 1))"
+out=$(mcp '{"jsonrpc":"2.0","id":61,"method":"tools/call","params":{"name":"package_notes_get","arguments":{"package":"pkg-a","kind":"decision"}}}')
+t_contains "build reason in journal" "$out" "verify journal flow"
+# already-published NVR queues nothing and writes no note
+n_before=$(sqlite3 "$FIX/notes.db" "SELECT COUNT(*) FROM notes;")
+out=$(mcp '{"jsonrpc":"2.0","id":62,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-c","reason":"should not queue"}}}')
+t_contains "build request published no-op" "$out" "already published (pkg-c-2.0-r1); nothing queued"
+n_after=$(sqlite3 "$FIX/notes.db" "SELECT COUNT(*) FROM notes;")
+t "published no-op writes no note" "$n_after" "$n_before" "$n_before"
+# disabled and unknown packages are refused, never queued
+out=$(mcp '{"jsonrpc":"2.0","id":63,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-b","reason":"x"}}}')
+t_contains "build request disabled isError" "$out" '"isError":true'
+out=$(mcp '{"jsonrpc":"2.0","id":64,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"nosuchpkg","reason":"x"}}}')
+t_contains "build request unknown isError" "$out" '"isError":true'
+# missing/oversize reason is a transport error
+out=$(mcp '{"jsonrpc":"2.0","id":65,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a"}}}')
+t_contains "build request missing reason -32602" "$out" '"code":-32602'
+bigreason=$(python3 -c "print('y' * 600)")
+out=$(mcp '{"jsonrpc":"2.0","id":66,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a","reason":"'"$bigreason"'"}}}')
+t_contains "build request oversize reason -32602" "$out" '"code":-32602'
+# revision bump: success journals the reason, refusal surfaces guards
+out=$(mcp '{"jsonrpc":"2.0","id":67,"method":"tools/call","params":{"name":"package_bump","arguments":{"package":"pkg-a","reason":"rebuild for test"}}}')
+t_contains "bump stored" "$out" "bumped pkg-a"
+t_contains "bump reason journaled" "$out" "note "
+t_contains "bump argv carries --yes" "$(cat "$FIX/bump-argv.log")" "--yes pkg-a"
+out=$(mcp '{"jsonrpc":"2.0","id":68,"method":"tools/call","params":{"name":"package_bump","arguments":{"package":"pkg-c","reason":"x"}}}')
+t_contains "bump refusal isError" "$out" '"isError":true'
+t_contains "bump refusal reason" "$out" "refused"
+out=$(mcp '{"jsonrpc":"2.0","id":69,"method":"tools/call","params":{"name":"package_bump","arguments":{"package":"pkg-b","reason":"x"}}}')
+t_contains "bump disabled isError" "$out" '"isError":true'
+# staged rows name the exact human-gated ask
+out=$(mcp '{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"package_build_status","arguments":{"name":"pkg-s"}}}')
+t_contains "status awaiting signing" "$out" "AWAITING SIGNING"
+t_contains "status names sign ask" "$out" "sudo sign-apk-repo pkg-s"
+
 # --- framing: every stdout line is valid JSON ---------------------------
 mcp '{"jsonrpc":"2.0","id":30,"method":"tools/list"}' '{"jsonrpc":"2.0","id":31,"method":"ping"}' > "$ROOT/frames.txt"
 python3 - "$ROOT/frames.txt" <<'EOF'
@@ -329,8 +420,11 @@ EOF
 [ $? -eq 0 ] || fail "framing validation crashed"
 
 # --- read-only proof ----------------------------------------------------
-H2=$(sha256sum "$FIX/queue.db" "$FIX/repo/repository.db" | sha256sum | cut -d' ' -f1)
-t "fixture DBs byte-identical" "$H2" "$H1" "$H1"
+# repository.db is never written by any tool: byte-identical. queue.db
+# legitimately gains rows through the daemon intake (asserted exactly
+# above); the journal lives in its own database by design.
+H2R=$(sha256sum "$FIX/repo/repository.db" | cut -d' ' -f1)
+t "repository DB byte-identical" "$H2R" "$H1R" "$H1R"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

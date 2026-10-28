@@ -1502,7 +1502,7 @@ static const char *col_text(sqlite3_stmt *st, int col, int *is_null) {
 }
 
 /* One build row as `nvr: STATE — detail` plus a timings line. */
-static void format_build(sqlite3 *db, sqlite3_stmt *st, gbuf *text) {
+static void format_build(sqlite3 *db, sqlite3_stmt *st, gbuf *text, int hint_sign) {
 	int n10, n11, n12, n8, n9, unused;
 	const char *package, *version, *revision, *state, *result;
 	const char *arch, *host;
@@ -1553,6 +1553,13 @@ static void format_build(sqlite3 *db, sqlite3_stmt *st, gbuf *text) {
 	gbuf_adds(text, " finished ");
 	sb_cell(text, st, 10);
 	gbuf_addch(text, '\n');
+	/* The signer is a human-gated boundary: the MCP never runs it,
+	 * so a staged row names the exact ask instead of going quiet. */
+	if (hint_sign && sbuf.p && strstr(sbuf.p, "AWAITING SIGNING")) {
+		gbuf_adds(text, "  next: built and unsigned - ask the operator to run `sudo sign-apk-repo ");
+		gbuf_adds(text, package ? package : "?");
+		gbuf_adds(text, "`\n");
+	}
 	if (db && !n10 && sqlite3_column_type(st, 5) != SQLITE_NULL &&
 	    !n8 && !n9) {
 		/* Copy first: the sbu query steps another statement on the
@@ -1745,7 +1752,7 @@ static int t_status(jv *args, gbuf *text, int *is_error, char *err, size_t errsz
 	(void)dbpath;
 	sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(st) == SQLITE_ROW) {
-		format_build(db, st, text);
+		format_build(db, st, text, 1);
 	} else {
 		gbuf_adds(text, "never built: ");
 		gbuf_adds(text, name);
@@ -1811,7 +1818,7 @@ static int t_history(jv *args, gbuf *text, int *is_error, char *err, size_t errs
 	sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(st, 2, (int)limit);
 	while ((rc = sqlite3_step(st)) == SQLITE_ROW && shown < limit) {
-		format_build(db, st, text);
+		format_build(db, st, text, 0);
 		shown++;
 	}
 	if (shown == 0) {
@@ -3134,6 +3141,348 @@ static int t_readiness(jv *args, gbuf *text, int *is_error, char *err, size_t er
 	return 0;
 }
 
+#define REASON_CAP 512
+
+/* Newest published NVR for a package, or "" when unpublished. */
+static void repo_newest_nvr(const char *pkg, char *out, size_t outsz) {
+	char dbpath[4096], dberr[128];
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	out[0] = 0;
+	if (snprintf(dbpath, sizeof dbpath, "%s/repository.db",
+	             path_repo_dir()) >= (int)sizeof dbpath)
+		return;
+	db = db_open_ro(dbpath, dberr, sizeof dberr);
+	if (!db)
+		return;
+	if (sqlite3_prepare_v2(db,
+	    "SELECT nvr FROM packages WHERE name=?1 AND is_newest=1 LIMIT 1",
+	    -1, &st, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(st) == SQLITE_ROW) {
+			const char *nvr = (const char *)sqlite3_column_text(st, 0);
+			if (nvr)
+				snprintf(out, outsz, "%s", nvr);
+		}
+	}
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+}
+
+/* First line of captured output, bounded. */
+static void output_first(gbuf *src, char *out, size_t outsz) {
+	size_t i = 0, j = 0;
+	while (i < src->len && j + 1 < outsz && i < 200) {
+		if (src->p[i] == '\n')
+			break;
+		out[j++] = src->p[i++];
+	}
+	out[j] = 0;
+	if (!j)
+		snprintf(out, outsz, "(no output)");
+}
+
+/* Append-only journal write shared by the action tools. Every state
+ * change the MCP performs records why (the caller's reason) alongside
+ * what happened. Returns the note id, or -1 with dberr set. */
+static long journal_note(const char *pkg, const char *kind,
+                         const char *title, const char *body,
+                         const char *author, char *dberr, size_t dberrsz) {
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	char now[21];
+	int rc;
+	long id = -1;
+	snprintf(dberr, dberrsz, "journal unavailable");
+	db = db_open_notes(dberr, dberrsz);
+	if (!db)
+		return -1;
+	utc_now(now);
+	rc = sqlite3_prepare_v2(db,
+	    "INSERT INTO notes(package,kind,title,body,author,recorder,created_at)"
+	    " VALUES(?1,?2,?3,?4,?5,?6,?7)", -1, &st, NULL);
+	if (rc == SQLITE_OK) {
+		sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 2, kind, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 3, title, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 4, body, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 5, author, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 6, journal_recorder, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 7, now, -1, SQLITE_TRANSIENT);
+		rc = sqlite3_step(st);
+	}
+	if (rc == SQLITE_DONE)
+		id = (long)sqlite3_last_insert_rowid(db);
+	else
+		snprintf(dberr, dberrsz, "journal write failed");
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+	return id;
+}
+
+/* ------------------------------------------------------------------ */
+/* build_request: queue a build through the daemon intake              */
+/*                                                                     */
+/* Runs `saphira-build scan` (argv, no shell) and reports what queued  */
+/* for the requested package. The daemon executes the build detached;  */
+/* the MCP never runs buildpkg itself and never blocks on the build.   */
+/* Scan is tree-wide by daemon design (it only queues genuinely        */
+/* changed work); the response names what moved for this package.      */
+/* sudo-gated steps stay human: the response carries the exact ask.    */
+/* ------------------------------------------------------------------ */
+static int t_build_request(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *pkg, *reason, *aa;
+	char author[CREDIT_CAP + 1], dberr[256], ebuf[256], first[220];
+	char nvr[280], newest[256], notetitle[300], notebody[1024];
+	recipe_t *pkgs = NULL;
+	size_t n = 0;
+	char *av[3];
+	gbuf so, se;
+	int trunc = 0, rc;
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	long before = 0, queued = 0;
+	(void)err;
+	(void)errsz;
+	pkg = arg_str(args, "package");
+	reason = arg_str(args, "reason");
+	aa = arg_str(args, "author");
+	if (!pkg || !pkg[0] || !reason || !reason[0])
+		return -1;
+	if (strlen(reason) > REASON_CAP)
+		return -1;
+	if (aa && strlen(aa) > CREDIT_CAP)
+		return -1;
+	resolve_credit(args, author, sizeof author);
+	if (recipe_collect(&pkgs, &n) != 0) {
+		*is_error = 1;
+		gbuf_adds(text, "cannot list recipes");
+		prov(text, "recipes");
+		return 0;
+	}
+	{
+		recipe_t *r = find_recipe(pkgs, n, pkg);
+		if (!r) {
+			*is_error = 1;
+			gbuf_adds(text, "unknown package: ");
+			gbuf_adds(text, pkg);
+			gbuf_addch(text, '\n');
+			recipe_free_all(pkgs, n);
+			prov(text, "recipes");
+			return 0;
+		}
+		if (r->disabled) {
+			*is_error = 1;
+			gbuf_adds(text, "package ");
+			gbuf_adds(text, pkg);
+			gbuf_adds(text, " is disabled; builds never queue for disabled recipes\n");
+			recipe_free_all(pkgs, n);
+			prov(text, "recipes");
+			return 0;
+		}
+		nvr_rest(r->ver[0] ? r->ver : "?", r->rel[0] ? r->rel : "?",
+		         nvr, sizeof nvr);
+		{
+			char full[280];
+			snprintf(full, sizeof full, "%s-%s", r->name, nvr);
+			recipe_free_all(pkgs, n);
+			repo_newest_nvr(pkg, newest, sizeof newest);
+			if (newest[0] && strcmp(newest, full) == 0) {
+				gbuf_adds(text, "already published (");
+				gbuf_adds(text, full);
+				gbuf_adds(text, "); nothing queued\n");
+				prov(text, "recipes, repository.db");
+				return text->failed ? -1 : 0;
+			}
+		}
+	}
+	db = db_open_ro(path_queue_db(), dberr, sizeof dberr);
+	if (db) {
+		if (sqlite3_prepare_v2(db,
+		    "SELECT COALESCE(MAX(id),0) FROM builds WHERE package=?1",
+		    -1, &st, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+			if (sqlite3_step(st) == SQLITE_ROW)
+				before = (long)sqlite3_column_int64(st, 0);
+		}
+		sqlite3_finalize(st);
+		sqlite3_close(db);
+	}
+	gbuf_init(&so);
+	gbuf_init(&se);
+	av[0] = "saphira-build";
+	av[1] = "scan";
+	av[2] = NULL;
+	rc = run_capture(av, &so, &se, &trunc, ebuf, sizeof ebuf);
+	if (rc != 0 || so.failed) {
+		output_first(&se, first, sizeof first);
+		*is_error = 1;
+		if (rc != 0) {
+			gbuf_adds(text, "build scan failed: ");
+			gbuf_adds(text, first);
+		} else {
+			gbuf_adds(text, "build scan output error");
+		}
+		gbuf_addch(text, '\n');
+		gbuf_free(&so);
+		gbuf_free(&se);
+		prov(text, "saphira-build scan");
+		return 0;
+	}
+	gbuf_free(&so);
+	gbuf_free(&se);
+	gbuf_adds(text, "build request for ");
+	gbuf_adds(text, pkg);
+	gbuf_adds(text, " (scan exit 0):\n  reason: ");
+	gbuf_adds(text, reason);
+	gbuf_addch(text, '\n');
+	db = db_open_ro(path_queue_db(), dberr, sizeof dberr);
+	if (db) {
+		if (sqlite3_prepare_v2(db,
+		    "SELECT id,state FROM builds WHERE package=?1 AND id>?2 ORDER BY id",
+		    -1, &st, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_int64(st, 2, (long long)before);
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				char tmp[128];
+				snprintf(tmp, sizeof tmp, "  queued row %lld: %s\n",
+				         (long long)sqlite3_column_int64(st, 0),
+				         sqlite3_column_text(st, 1));
+				gbuf_adds(text, tmp);
+				queued++;
+			}
+		}
+		sqlite3_finalize(st);
+		sqlite3_close(db);
+	}
+	if (!queued)
+		gbuf_adds(text, "  no new rows for this package (already queued, failed, or unchanged)\n");
+	snprintf(notetitle, sizeof notetitle, "build requested: %s", pkg);
+	snprintf(notebody, sizeof notebody, "%s\nscan queued %ld new row(s)", reason, queued);
+	{
+		long nid = journal_note(pkg, "decision", notetitle, notebody, author,
+		                        dberr, sizeof dberr);
+		char tmp[128];
+		if (nid > 0)
+			snprintf(tmp, sizeof tmp, "note %ld recorded: build requested\n", nid);
+		else
+			snprintf(tmp, sizeof tmp, "WARNING: journal write failed (%s)\n", dberr);
+		gbuf_adds(text, tmp);
+	}
+	gbuf_adds(text, "the builder daemon executes detached; follow with build_queue / package_build_status\n");
+	gbuf_adds(text, "when status shows AWAITING SIGNING, ask the operator to run `sudo sign-apk-repo ");
+	gbuf_adds(text, pkg);
+	gbuf_adds(text, "`\n");
+	prov(text, "saphira-build scan, build queue, notes.db");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* package_bump: revision bump with guards, rationale journaled        */
+/*                                                                     */
+/* Runs `bumppkg --yes <pkg>` (argv, no shell). bumppkg owns every     */
+/* pkgrel transition and refuses with reasons (never-published,        */
+/* 24h anti-loop, disabled); refusals surface as isError, never as     */
+/* silent success. A successful bump records the caller's reason in    */
+/* the journal: revision changes must remember why.                    */
+/* ------------------------------------------------------------------ */
+static int t_package_bump(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *pkg, *reason, *aa;
+	char author[CREDIT_CAP + 1], dberr[256], ebuf[256], first[220];
+	char notetitle[300], notebody[1024];
+	recipe_t *pkgs = NULL;
+	size_t n = 0;
+	char *av[4];
+	gbuf so, se;
+	int trunc = 0, rc;
+	(void)err;
+	(void)errsz;
+	pkg = arg_str(args, "package");
+	reason = arg_str(args, "reason");
+	aa = arg_str(args, "author");
+	if (!pkg || !pkg[0] || !reason || !reason[0])
+		return -1;
+	if (strlen(reason) > REASON_CAP)
+		return -1;
+	if (aa && strlen(aa) > CREDIT_CAP)
+		return -1;
+	resolve_credit(args, author, sizeof author);
+	if (recipe_collect(&pkgs, &n) != 0) {
+		*is_error = 1;
+		gbuf_adds(text, "cannot list recipes");
+		prov(text, "recipes");
+		return 0;
+	}
+	{
+		recipe_t *r = find_recipe(pkgs, n, pkg);
+		if (!r) {
+			*is_error = 1;
+			gbuf_adds(text, "unknown package: ");
+			gbuf_adds(text, pkg);
+			gbuf_addch(text, '\n');
+			recipe_free_all(pkgs, n);
+			prov(text, "recipes");
+			return 0;
+		}
+		if (r->disabled) {
+			*is_error = 1;
+			gbuf_adds(text, "package ");
+			gbuf_adds(text, pkg);
+			gbuf_adds(text, " is disabled; revisions never bump for disabled recipes\n");
+			recipe_free_all(pkgs, n);
+			prov(text, "recipes");
+			return 0;
+		}
+		recipe_free_all(pkgs, n);
+	}
+	gbuf_init(&so);
+	gbuf_init(&se);
+	av[0] = "bumppkg";
+	av[1] = "--yes";
+	av[2] = (char *)pkg;
+	av[3] = NULL;
+	rc = run_capture(av, &so, &se, &trunc, ebuf, sizeof ebuf);
+	output_first(rc == 0 ? &so : &se, first, sizeof first);
+	if (rc != 0) {
+		*is_error = 1;
+		gbuf_adds(text, "bump refused or failed: ");
+		gbuf_adds(text, first);
+		gbuf_addch(text, '\n');
+		gbuf_free(&so);
+		gbuf_free(&se);
+		prov(text, "bumppkg");
+		return 0;
+	}
+	gbuf_adds(text, "package_bump for ");
+	gbuf_adds(text, pkg);
+	gbuf_adds(text, ":\n  reason: ");
+	gbuf_adds(text, reason);
+	gbuf_addch(text, '\n');
+	gbuf_adds(text, "  ");
+	gbuf_adds(text, first);
+	gbuf_addch(text, '\n');
+	gbuf_free(&so);
+	gbuf_free(&se);
+	snprintf(notetitle, sizeof notetitle, "revision bumped: %s", pkg);
+	snprintf(notebody, sizeof notebody, "%s\nbumppkg: %s", reason, first);
+	{
+		long nid = journal_note(pkg, "decision", notetitle, notebody, author,
+		                        dberr, sizeof dberr);
+		char tmp[128];
+		if (nid > 0)
+			snprintf(tmp, sizeof tmp, "note %ld recorded: revision bumped\n", nid);
+		else
+			snprintf(tmp, sizeof tmp, "WARNING: bump succeeded but journal write failed (%s)\n", dberr);
+		gbuf_adds(text, tmp);
+	}
+	prov(text, "bumppkg, notes.db");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* dispatch                                                            */
 /* ------------------------------------------------------------------ */
@@ -3174,6 +3523,10 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
 		return t_policy_record(args, text, is_error, err, sizeof err);
 	if (strcmp(name, "package_readiness") == 0)
 		return t_readiness(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "build_request") == 0)
+		return t_build_request(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "package_bump") == 0)
+		return t_package_bump(args, text, is_error, err, sizeof err);
 	return -1;
 }
 
