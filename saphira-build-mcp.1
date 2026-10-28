@@ -1,0 +1,39 @@
+.TH SAPHIRA-BUILD-MCP 1 "October 2026" "saphira-build-mcp 0.1.0" "Saphira"
+.SH NAME
+saphira-build-mcp \- read-only Saphira build and package queries for AI agents
+.SH SYNOPSIS
+.B saphira-build-mcp --mcp
+.br
+.B saphira-build-mcp --list-tools
+.SH DESCRIPTION
+.B saphira-build-mcp
+is a local MCP stdio server exposing Saphira package, build-queue,
+artifact and Unix-identity state to agents. It reads the builder
+state only: recipes, the APK and repository databases, the build
+queue and retained logs. It never builds, signs, publishes,
+installs or restarts anything, never executes recipe scripts, and
+never opens a network socket.
+.PP
+With
+.B --mcp
+it speaks JSON-RPC over stdin/stdout (newline-delimited objects;
+LSP Content-Length framing accepted as fallback) and exits on EOF.
+With
+.B --list-tools
+it prints the tools/list document (also the build-time self-check).
+.SH TOOLS
+Eleven read-only tools: package_search, package_info,
+package_dependencies, package_why_installed, package_installed,
+package_build_status, package_build_history, package_build_log,
+package_artifacts, build_queue, package_identity. Every result ends
+with a [src: ...] provenance line naming the files read.
+.SH ENVIRONMENT
+Data-source paths default to the live system and can be pointed at
+fixtures for testing:
+.B SBM_RECIPES SBM_QUEUE_DB SBM_REPO_DIR SBM_INCOMING SBM_TSV
+.B SBM_PASSWD SBM_GROUP SBM_APKDB
+.SH EXIT STATUS
+0 on success (server exits 0 on stdin EOF). 1 on internal errors.
+2 on usage errors.
+.SH SEE ALSO
+.BR saphira-build (8)

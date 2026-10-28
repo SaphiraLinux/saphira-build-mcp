@@ -1,0 +1,37 @@
+#include "core.h"
+#include "mcp.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+static const char *usage =
+    "saphira-build-mcp - read-only Saphira build/package queries for AI agents\n"
+    "\n"
+    "usage:\n"
+    "  saphira-build-mcp --mcp         MCP stdio server (11 read-only tools)\n"
+    "  saphira-build-mcp --list-tools  print the tools/list JSON document\n"
+    "\n"
+    "The server reads the Saphira builder state only: recipes, the APK and\n"
+    "repository databases, the build queue and retained logs. It never\n"
+    "builds, signs, publishes, installs or restarts anything, and it never\n"
+    "executes recipe scripts. Data-source paths default to the live system\n"
+    "and can be pointed at fixtures for testing:\n"
+    "  SBM_RECIPES SBM_QUEUE_DB SBM_REPO_DIR SBM_INCOMING SBM_TSV\n"
+    "  SBM_PASSWD SBM_GROUP SBM_APKDB\n";
+
+int main(int argc, char **argv) {
+	if (argc == 2 && strcmp(argv[1], "--mcp") == 0)
+		return run_stdio();
+	if (argc == 2 && strcmp(argv[1], "--list-tools") == 0) {
+		size_t n = strlen(SBM_TOOLS_LIST_JSON);
+		if (fwrite(SBM_TOOLS_LIST_JSON, 1, n, stdout) != n)
+			return 1;
+		if (fputc('\n', stdout) == EOF)
+			return 1;
+		return 0;
+	}
+	fputs(usage, stderr);
+	return 2;
+}
