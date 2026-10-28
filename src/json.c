@@ -27,6 +27,7 @@ static int jv_grow_kv(jv *v) {
 }
 static jv *jv_new(int t) {
 	jv *v = calloc(1, sizeof *v);
+	if (!v) return NULL;
 	v->t = t;
 	return v;
 }
