@@ -2187,9 +2187,13 @@ static void passwd_lookup(const char *path, const char *name, int is_group, gbuf
 #define IDENT_LEN 128
 
 /* Identity names owned by a package: the 2nd whitespace-separated
- * field of each fragment line (`user <name> ...`). The package name
- * itself is NOT an identity; looking live accounts up by package
- * name is how pkg-a once reported "absent" for a healthy pkguser. */
+ * field of `user`/`group` fragment lines only. `dir`/`file` stanzas
+ * name paths in their second field (/var/lib/...), which are not
+ * identities - reading those as names once printed phantom
+ * "/var/lib/dashboard: absent" rows for a healthy package. The
+ * package name itself is NOT an identity either; looking live
+ * accounts up by package name is how pkg-a once reported "absent"
+ * for a healthy pkguser. */
 static int frag_idents(const char *fragp, size_t fraglen,
                        char out[][IDENT_LEN], int max) {
 	int n = 0;
@@ -2197,34 +2201,40 @@ static int frag_idents(const char *fragp, size_t fraglen,
 	while (p < end && n < max) {
 		const char *nl = memchr(p, '\n', (size_t)(end - p));
 		const char *eol = nl ? nl : end;
-		const char *s = p;
+		const char *s = p, *f0, *ns;
+		size_t f0len;
 		while (s < eol && (*s == ' ' || *s == '\t' || *s == '\r'))
 			s++;
-		if (s < eol && *s != '#') {
-			const char *ns;
-			while (s < eol && *s != ' ' && *s != '\t' && *s != '\r')
-				s++;
-			while (s < eol && (*s == ' ' || *s == '\t'))
-				s++;
-			ns = s;
-			while (s < eol && *s != ' ' && *s != '\t' && *s != '\r')
-				s++;
-			if (s > ns && (size_t)(s - ns) < IDENT_LEN) {
-				int k, dup = 0;
-				for (k = 0; k < n; k++) {
-					if (strlen(out[k]) == (size_t)(s - ns) &&
-					    memcmp(out[k], ns, (size_t)(s - ns)) == 0) {
-						dup = 1;
-						break;
-					}
-				}
-				if (!dup) {
-					memcpy(out[n], ns, (size_t)(s - ns));
-					out[n][s - ns] = 0;
-					n++;
+		if (s >= eol || *s == '#')
+			goto next_frag_line;
+		f0 = s;
+		while (s < eol && *s != ' ' && *s != '\t' && *s != '\r')
+			s++;
+		f0len = (size_t)(s - f0);
+		if ((f0len != 4 || memcmp(f0, "user", 4) != 0) &&
+		    (f0len != 5 || memcmp(f0, "group", 5) != 0))
+			goto next_frag_line;
+		while (s < eol && (*s == ' ' || *s == '\t'))
+			s++;
+		ns = s;
+		while (s < eol && *s != ' ' && *s != '\t' && *s != '\r')
+			s++;
+		if (s > ns && (size_t)(s - ns) < IDENT_LEN) {
+			int k, dup = 0;
+			for (k = 0; k < n; k++) {
+				if (strlen(out[k]) == (size_t)(s - ns) &&
+				    memcmp(out[k], ns, (size_t)(s - ns)) == 0) {
+					dup = 1;
+					break;
 				}
 			}
+			if (!dup) {
+				memcpy(out[n], ns, (size_t)(s - ns));
+				out[n][s - ns] = 0;
+				n++;
+			}
 		}
+	next_frag_line:
 		if (!nl)
 			break;
 		p = nl + 1;

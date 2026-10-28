@@ -99,6 +99,7 @@ printf 'pkguser:x:150:\nroot:x:0:\n' > "$FIX/group"
 mkdir -p "$FIX/recipes/pkg-a/files/accounts.d"
 printf 'user\tpkguser\t150\tpkguser\t/var/lib/pkg-a\t/sbin/nologin\n' > "$FIX/recipes/pkg-a/files/accounts.d/pkg-a"
 printf 'group\tpkguser\t150\t-\t-\t-\t-\n' >> "$FIX/recipes/pkg-a/files/accounts.d/pkg-a"
+printf 'dir\t/var/lib/pkg-a\t0755\tpkguser\tpkguser\n' >> "$FIX/recipes/pkg-a/files/accounts.d/pkg-a"
 
 # --- fixture databases (schemas mirror the live ones) ----------------
 sqlite3 "$FIX/queue.db" <<'SQL'
@@ -253,6 +254,7 @@ out=$(mcp '{"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"pack
 t_contains "identity reservations" "$out" "owned by pkg-a"
 t_contains "identity live user" "$out" "uid=150"
 t_contains "identity registry" "$out" "pkguser"
+t_not_contains "identity ignores dir paths" "$out" "/var/lib/pkg-a: absent"
 
 # --- evidence journal (Egg-local notes.db; fixtures override it) --------
 export SBM_AUTHOR=test-agent
