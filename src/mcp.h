@@ -2,7 +2,7 @@
 #define SBM_MCP_H
 
 #define SBM_NAME "saphira-build-mcp"
-#define SBM_VERSION "0.3.0"
+#define SBM_VERSION "0.4.0"
 
 #define SBM_MAX_REQUEST_BYTES (64u * 1024u)
 #define SBM_MAX_HEADER_BYTES 16384u
