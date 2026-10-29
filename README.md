@@ -8,11 +8,23 @@ A local Model Context Protocol (MCP) server with two capabilities:
    repository, build queue and policy tools when `SBM_SAPHIRA=on`.
 
 You do **not** need Saphira Linux, `/recipes`, a Saphira repository
-or a builder database to use the portable features. The same binary
-runs on Arch, Debian, Ubuntu, Alpine, Saphira or another compatible
-Linux distribution, subject to the build and runtime dependencies
-below. (Arch and Saphira are test-verified; the others follow from
-the same POSIX C and are marked where proven.)
+or a builder database to use the portable features — and you do not
+need to compile anything. The repository ships three self-contained
+binaries plus one installer:
+
+| File | Platform |
+|---|---|
+| `saphira-build-mcp.osx` | macOS, Apple Silicon |
+| `saphira-build-mcp.musl` | Linux, musl libc (static, no dependencies) |
+| `saphira-build-mcp.arch` | Linux, glibc (needs system SQLite) |
+
+`.musl` is fully static; `.arch` links the system SQLite; `.osx`
+links macOS system libraries. All three are built from the tagged
+release named in `SHA256SUMS` and verified by checksum at install
+time. The same binary runs on Arch, Debian, Ubuntu, Alpine,
+Saphira or another compatible Linux distribution. (Arch, Saphira
+and Apple Silicon are test-verified; the others follow from the
+same POSIX C and are marked where proven.)
 
 It never builds, signs, publishes, installs or restarts anything,
 and it never executes recipe scripts. Missing data sources produce
@@ -51,6 +63,34 @@ Python 3 for the test suite):
 
 ```sh
 git clone https://github.com/SaphiraLinux/saphira-build-mcp.git && cd saphira-build-mcp
+./install.sh                              # binary + man page only
+./install.sh --configure-agents           # plus detected agents
+./install.sh --configure-agents --with-rules=FILE
+                                          # plus append checkpoint rules
+```
+
+The installer detects operating system, architecture and libc,
+selects the matching binary, checksum-verifies it, and installs
+under `~/.local/bin` (root installs to `/usr/bin`; `PREFIX=` and
+`DESTDIR=` supported). It refuses to install on a checksum
+mismatch and proves the installed copy by running its
+`tools/list`. macOS is decided first, so a Linux binary is never
+installed on a Mac merely because the architecture matches.
+
+With `--configure-agents` it additionally wires up whichever
+agents are installed: opencode entries are inserted into an
+existing `opencode.jsonc` `mcp` block, Codex entries go through
+the vendor `codex mcp add` command, and anything unrecognized
+falls back to printed manual instructions. Every configuration
+write is backup-first (`.bak-sbm-<date>` beside the original);
+an entry that already exists is left alone and reported, never
+overwritten. `--with-rules=FILE` appends the checkpoint
+discipline to a persistent instruction file, skipping when
+already present.
+
+To build from source instead:
+
+```sh
 make                # static binary where supported, else dynamic
 make test           # hermetic suite, no live paths touched
 sudo make install   # root: /usr/bin; without sudo: ~/.local/bin
@@ -157,16 +197,62 @@ command path when installed with sudo instead.
 
 Install the checkpoint rules from the previous section into the
 file named in `instructions` (adapting, not overwriting), then
-verify end to end: save a checkpoint, restart the agent, and
-confirm the fresh session lists the register and asks what to do
-before anything else. That round-trip — not the config file
-alone — is the proof the setup works.
+verify end to end: `opencode mcp list` should show
+`saphira-build connected`; then save a checkpoint, restart the
+agent, and confirm the fresh session lists the register and asks
+what to do before anything else. That round-trip — not the config
+file alone — is the proof the setup works.
 
-For other MCP-capable agents the principle is the same:
-configure the server binary with the environment above and load
-equivalent persistent instructions through that client's
-supported mechanism. Client formats we have not tested are not
-documented here.
+## Other agents
+
+The universal contract is small: any MCP client that can launch a
+stdio command with environment variables can use this server.
+Command is the installed binary plus `--mcp`; environment is
+`SBM_SAPHIRA=off`, `SBM_AUTHOR=<user>` and
+`SBM_NOTES_DB=<per-host journal path>`; no ports, no network, no
+working-directory requirements.
+
+**Codex** (verified against the real CLI): entries live in
+`~/.codex/config.toml` under `[mcp_servers.<name>]`, or via the
+vendor command, which is what `./install.sh --configure-agents`
+uses:
+
+```sh
+codex mcp add saphira-build \
+  --env SBM_SAPHIRA=off --env SBM_AUTHOR=USER \
+  --env SBM_NOTES_DB=/home/USER/.local/share/saphira-build-mcp/notes.db \
+  -- /usr/bin/saphira-build-mcp --mcp
+```
+
+Confirm with `codex mcp list` (connected) and `codex mcp get
+saphira-build` (shows command, args and masked env). Codex loads
+persistent instructions from `AGENTS.md` files — append
+`rules/AGENT_MCP_RULES.md` to yours (the installer does this
+with `--with-rules=FILE`) so checkpoint discipline survives new
+sessions.
+
+**Claude Code** (shape per Anthropic's docs — no Claude host was
+available to verify against, so confirm locally before trusting
+it): from the project directory,
+
+```sh
+claude mcp add saphira-build --transport stdio \
+  --env SBM_SAPHIRA=off --env SBM_AUTHOR=USER \
+  --env SBM_NOTES_DB=/home/USER/.local/share/saphira-build-mcp/notes.db \
+  -- /usr/local/bin/saphira-build-mcp --mcp
+claude mcp list
+```
+
+or equivalently a `.mcp.json` entry with `command`, `args` and
+`env` keys. Persistent instructions live in `CLAUDE.md`; install
+the rules template there the same way.
+
+**Anything else:** configure the binary plus the three
+environment variables through that client's stdio-server
+mechanism, install the rules template into its persistent
+instructions, and run the same round-trip proof (save, restart,
+list-first). Client formats we have not tested are not documented
+here — the stdio contract above is the whole interface.
 
 ## Checkpoints and local journal
 
