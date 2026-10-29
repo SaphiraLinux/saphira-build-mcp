@@ -613,13 +613,13 @@ t_not_contains "recall session excludes others" "$out" "server fill"
 out=$(mcp '{"jsonrpc":"2.0","id":408,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"export","session_id":"tr-sess","limit":2}}}')
 t_contains "recall export json" "$out" "tr-w1"
 t_contains "recall export page cursor" "$out" "[page complete: cursor="
-cur=$(echo "$out" | sed -n 's/.*\[page complete: cursor=\([^]]*\)].*/\1/p' | head -1)
+cur=$(printf '%s\n' "$out" | sed -n 's/.*\[page complete: cursor=\([^]]*\)].*/\1/p' | head -1)
 out=$(mcp '{"jsonrpc":"2.0","id":409,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"export","session_id":"tr-sess","limit":2,"cursor":"'"$cur"'"}}}')
 t_contains "recall export page2" "$out" "policy_records"
 t_contains "recall export page2 end" "$out" "cursor: end"
 # export rows are well-formed JSON with the contracted keys
 out=$(mcp '{"jsonrpc":"2.0","id":430,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"export","session_id":"tr-sess","limit":5}}}')
-echo "$out" | python3 -c "import json,sys; text=json.load(sys.stdin)['result']['content'][0]['text']; rows=[json.loads(l) for l in text.splitlines() if l.strip().startswith('{')]; data=[r for r in rows if 'table' in r]; assert len(data)>=3, len(data); assert all(set(('table','id','session','created_at','body')) <= set(r) for r in data); print('export json valid')" > "$FIX/export-check.txt" || echo "EXPORT-JSON-INVALID" > "$FIX/export-check.txt"
+printf '%s\n' "$out" | python3 -c "import json,sys; text=json.load(sys.stdin)['result']['content'][0]['text']; rows=[json.loads(l) for l in text.splitlines() if l.strip().startswith('{')]; data=[r for r in rows if 'table' in r]; assert len(data)>=3, len(data); assert all(set(('table','id','session','created_at','body')) <= set(r) for r in data); print('export json valid')" > "$FIX/export-check.txt" || echo "EXPORT-JSON-INVALID" > "$FIX/export-check.txt"
 t_contains "recall export json valid" "$(cat "$FIX/export-check.txt")" "export json valid"
 # rows are atomic under the budget: two ~3 KiB full rows overflow
 # compact after the first, complete under deep

@@ -37,7 +37,6 @@ static void audit(const ext_tool *t, const char *author,
 	char err[256];
 	char ts[32];
 	prov_t pv;
-	int bi;
 	const char *sql =
 	    "INSERT INTO tool_runs(tool,argv,class,author,recorder,"
 	    "exit_status,elapsed_ms,truncated,timed_out,created_at,"
