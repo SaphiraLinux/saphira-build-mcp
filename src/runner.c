@@ -80,7 +80,7 @@ int runner_exec(const ext_tool *t, const char *author,
 	struct timespec t0, now;
 	struct stat st;
 	gbuf argv_text;
-	char *exec_argv[CONF_MAX_ARGV + 32];
+	char *exec_argv[CONF_MAX_ARGV + 48];
 	int ea = 0;
 	int status = -1, timed_out = 0, truncated = 0, reaped = 0;
 	long ms = 0;
@@ -142,6 +142,50 @@ int runner_exec(const ext_tool *t, const char *author,
 			exec_argv[ea++] = "--ro-bind";
 			exec_argv[ea++] = "/recipes";
 			exec_argv[ea++] = "/recipes";
+		}
+		/* Usr-merge portability: bind the FHS trees that are real
+		 * directories; re-create host symlinks (absolutized) for
+		 * the rest. All four trees live at /, so a relative link
+		 * target resolves against /. On Saphira every tree here
+		 * is a real directory and the emitted argv is unchanged;
+		 * on merged systems (Arch: all four are symlinks) the
+		 * compat links make the loader and PATH resolve. A tree
+		 * that is neither dir nor readable link is skipped. */
+		{
+			static const char *tree[] = {
+				"/bin", "/sbin", "/lib", "/lib64"
+			};
+			static char linktgt[4][4096];
+			size_t ti;
+			for (ti = 0; ti < 4; ti++) {
+				struct stat lst;
+				if (lstat(tree[ti], &lst) != 0)
+					continue;
+				if (S_ISDIR(lst.st_mode)) {
+					exec_argv[ea++] = "--ro-bind";
+					exec_argv[ea++] = (char *)tree[ti];
+					exec_argv[ea++] = (char *)tree[ti];
+				} else if (S_ISLNK(lst.st_mode)) {
+					/* First half holds the raw link, second
+					 * half the absolutized form: source and
+					 * destination never overlap. */
+					ssize_t k = readlink(tree[ti],
+					                     linktgt[ti], 2047);
+					if (k <= 0 || k >= 2047)
+						continue;
+					linktgt[ti][k] = 0;
+					exec_argv[ea++] = "--symlink";
+					if (linktgt[ti][0] == '/') {
+						exec_argv[ea++] = linktgt[ti];
+					} else {
+						char *p = linktgt[ti] + 2048;
+						snprintf(p, 2048, "/%s",
+						         linktgt[ti]);
+						exec_argv[ea++] = p;
+					}
+					exec_argv[ea++] = (char *)tree[ti];
+				}
+			}
 		}
 		if (strcmp(t->dir, "/") != 0 &&
 		    strcmp(t->dir, "/recipes") != 0) {

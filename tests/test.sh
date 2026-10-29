@@ -642,6 +642,7 @@ chmod +x "$FIX/bin/fake-bwrap.sh"
 printf 'tool ext_probe %s read 10 65536 on %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-probe.conf"
 out=$(SBM_TOOLS_CONF="$FIX/ext-probe.conf" SBM_BWRAP="$FIX/bin/fake-bwrap.sh" mcp '{"jsonrpc":"2.0","id":221,"method":"tools/call","params":{"name":"ext_probe","arguments":{}}}')
 t_contains "sandbox profile keeps unshare" "$out" "--unshare-net"
+t_contains "sandbox profile binds usr" "$out" "--ro-bind /usr /usr"
 if [ -d /recipes ]; then
 	t_contains "sandbox binds recipes where present" "$out" "--ro-bind /recipes /recipes"
 else
