@@ -9,22 +9,33 @@ A local Model Context Protocol (MCP) server with two capabilities:
 
 You do **not** need Saphira Linux, `/recipes`, a Saphira repository
 or a builder database to use the portable features — and you do not
-need to compile anything. The repository ships three self-contained
-binaries plus one installer:
+need to compile anything. The repository ships six prebuilt
+binaries plus one installer. Each platform comes in two sizes:
+small (shared system SQLite) and large (`-builtin`, SQLite
+compiled in, zero database dependency):
 
-| File | Platform |
-|---|---|
-| `saphira-build-mcp.osx` | macOS, Apple Silicon |
-| `saphira-build-mcp.musl` | Linux, musl libc (static, no dependencies) |
-| `saphira-build-mcp.arch` | Linux, glibc (needs system SQLite) |
+| Small (shared) | Large (builtin) | Platform |
+|---|---|---|
+| `saphira-build-mcp.osx` | `saphira-build-mcp.osx-builtin` | macOS, Apple Silicon |
+| `saphira-build-mcp.musl` | `saphira-build-mcp.musl-builtin` | Linux, musl libc |
+| `saphira-build-mcp.arch` | `saphira-build-mcp.arch-builtin` | Linux, glibc |
 
-`.musl` is fully static; `.arch` links the system SQLite; `.osx`
-links macOS system libraries. All three are built from the tagged
-release named in `SHA256SUMS` and verified by checksum at install
-time. The same binary runs on Arch, Debian, Ubuntu, Alpine,
-Saphira or another compatible Linux distribution. (Arch, Saphira
-and Apple Silicon are test-verified; the others follow from the
-same POSIX C and are marked where proven.)
+The `-builtin` binaries carry SQLite inside (the `.musl` one is
+fully static); the small ones link the system SQLite — the musl
+small binary is ~99 KB against the builtin's ~818 KB. All six are
+built from the tagged release named in `SHA256SUMS` and verified
+by checksum at install time. Bundling SQLite and producing a
+completely static executable are not the same thing, and the
+matrix is honest about it: the macOS builtin links only the
+system `libSystem` (verified with `otool -L`: no `libsqlite3`
+entry, where the small binary lists it), and the Arch builtin
+needs only `libc` plus the loader (verified with `ldd`: no
+`libsqlite3` entry, where the small binary lists it). Only the
+musl builtin is static end to end. The same binaries run on Arch,
+Debian, Ubuntu, Alpine, Saphira or another compatible Linux
+distribution. (Arch, Saphira and Apple Silicon are test-verified;
+the others follow from the same POSIX C and are marked where
+proven.)
 
 It never builds, signs, publishes, installs or restarts anything,
 and it never executes recipe scripts. Missing data sources produce
@@ -64,18 +75,22 @@ Python 3 for the test suite):
 ```sh
 git clone https://github.com/SaphiraLinux/saphira-build-mcp.git && cd saphira-build-mcp
 ./install.sh                              # binary + man page only
+./install.sh --shared | --builtin         # force SQLite linkage
 ./install.sh --configure-agents           # plus detected agents
 ./install.sh --configure-agents --with-rules=FILE
                                           # plus append checkpoint rules
 ```
 
 The installer detects operating system, architecture and libc,
-selects the matching binary, checksum-verifies it, and installs
-under `~/.local/bin` (root installs to `/usr/bin`; `PREFIX=` and
-`DESTDIR=` supported). It refuses to install on a checksum
-mismatch and proves the installed copy by running its
-`tools/list`. macOS is decided first, so a Linux binary is never
-installed on a Mac merely because the architecture matches.
+then picks the variant automatically: shared where the system
+provides SQLite, builtin elsewhere (`--shared` / `--builtin`
+force either). It checksum-verifies the binary before writing
+anything and installs under `~/.local/bin` (root installs to
+`/usr/bin`; `PREFIX=` and `DESTDIR=` supported). It refuses to
+install on a checksum mismatch and proves the installed copy by
+running its `tools/list`. macOS is decided first, so a Linux
+binary is never installed on a Mac merely because the
+architecture matches.
 
 With `--configure-agents` it additionally wires up whichever
 agents are installed: opencode entries are inserted into an
@@ -98,12 +113,36 @@ sudo make install   # root: /usr/bin; without sudo: ~/.local/bin
 
 macOS compiles and the suite passes on Apple Silicon (verified
 on arm64): Xcode command line tools provide compiler, make,
-SQLite and `shasum` — no Homebrew packages are required for
-build or test. Two known limits: sandboxed external tools need
-`bwrap` (Linux-only — those calls fail closed without it while
-everything else runs) and evidence digests are computed
-in-process, so freshness checks work identically with no
-`sha256sum` anywhere.
+SQLite and `shasum` — no Homebrew packages are required to
+build, test or run the MCP binary itself. Two known limits:
+sandboxed external tools need `bwrap` (Linux-only — those calls
+fail closed without it) while everything else runs) and evidence
+digests are computed in-process, so freshness checks work
+identically with no `sha256sum` anywhere.
+
+Setting up the *agent* on a Mac is where Homebrew enters. The
+MCP binary itself never needs Homebrew — only the software
+around it might. Verified on Apple Silicon with Homebrew 7.0.11:
+
+- **Node.js** (only needed by agents built on it): `brew install
+  node` (formula verified present; the install itself was not
+  exercised — Node was not required for anything tested here).
+- **OpenCode:** install from the official installer at
+  opencode.ai, then run `./install.sh --configure-agents`.
+  (Verified with opencode v2.2.2, which arrived out-of-band: the
+  bottled formula still offered 2.2.1 at the time, so prefer the
+  official installer.) Confirm with `opencode mcp list`, which
+  should show `saphira-build connected`.
+- **Codex:** a Homebrew formula exists (verified present, not
+  installed here). After installing, wire it with
+  `codex mcp add saphira-build --env SBM_SAPHIRA=off [...]`
+  as documented under Other agents, or let
+  `./install.sh --configure-agents` do it, and confirm with
+  `codex mcp list`.
+
+Whichever agent you use, finish with the round-trip proof from
+the OpenCode section: save a checkpoint, restart, confirm the
+fresh session lists the register before doing anything else.
 
 ## Important: install agent checkpoint rules
 
@@ -351,6 +390,43 @@ failures) is audited to the journal `tool_runs` table with tool,
 argv, agent, exit status and elapsed time. See
 `tools.conf.example` for the curated starting set.
 
+## Verified platforms
+
+- **Saphira Linux (musl, x86-64):** hermetic suite green,
+  canonical `buildpkg` releases.
+- **Arch Linux (glibc, x86-64):** hermetic suite green on the
+  same tree.
+- **macOS Apple Silicon (arm64):** suite green (1 skip: no
+  `bwrap` on macOS, fail-closed by design), plus the end-to-end
+  agent recovery test below. Intel macOS is not tested.
+
+### macOS Apple Silicon recovery test (2026-10-29, PASS)
+
+On an Apple Silicon M2 Mac running macOS, with OpenCode v2.2.2
+and the prebuilt `.osx` binary in portable mode:
+
+1. In the original session, the operator instructed the agent to
+   use MCP checkpoint tools only, without filesystem inspection.
+2. The agent called `checkpoint_list`, resumed an existing
+   checkpoint, and saved a new checkpoint holding an arbitrary
+   personal fact and its meaning (content redacted here) as a
+   persistence probe.
+3. The session was closed and a fresh OpenCode session started.
+4. Asked to recover the fact, the new agent called
+   `checkpoint_list`, presented the three active checkpoints, and
+   waited for operator selection — no auto-resume.
+5. On selection, the agent called `checkpoint_resume` and
+   correctly recovered the fact and its meaning.
+
+Measured result: OpenCode reported **6,015 tokens used** for the
+recovery interaction. That is the session's reported usage, not
+an isolated measurement of MCP retrieval.
+
+No filesystem inspection was performed by the agent during the
+demonstrated workflow. Codex, other agents, Intel macOS and
+every installer configuration were not part of this test and
+are not claimed.
+
 ## Build, test and packaging
 
 ```sh
@@ -371,8 +447,8 @@ where the action tools run), the tools.conf extension suite
 fail-closed, audit rows), and the portable-mode suite (tool
 partition, call refusal, cross-process checkpoint recovery,
 invalid-mode failure, journal self-initialisation). Suite green
-on Saphira (musl) and Arch (glibc); macOS and WSL2 status as
-noted in Quick start.
+on Saphira (musl), Arch (glibc) and Apple Silicon (see Verified
+platforms); WSL2 status as noted in Quick start.
 
 Canonical Saphira builds pull a release tarball and compile under
 `/build` as part of a valid Saphira recipe (`buildpkg`,

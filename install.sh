@@ -3,12 +3,19 @@
 # this host, and optionally wire it into the agents installed here.
 #
 #   ./install.sh                                   # binary + man page only
+#   ./install.sh --shared | --builtin              # force SQLite linkage
 #   ./install.sh --configure-agents                # plus detected agents
-#   ./install.sh --configure-agents --with-rules FILE
+#   ./install.sh --configure-agents --with-rules=FILE
 #                                                  # plus append checkpoint
 #                                                  # rules to FILE
 #   PREFIX=/opt/sb ./install.sh ...                # explicit prefix wins
 #   DESTDIR=/tmp/stage ./install.sh ...            # staged installs
+#
+# Variant: each platform ships small (shared system SQLite) and
+# large (-builtin, SQLite compiled in). Default is automatic:
+# shared where the system provides SQLite, builtin elsewhere.
+# --shared / --builtin force either (the proof run below still
+# refuses a binary that cannot run here).
 #
 # Install location mirrors `make install`: root installs system-wide
 # (/usr/bin), an ordinary user installs into ~/.local/bin.
@@ -34,9 +41,12 @@ BINPATH=$DESTDIR$PREFIX/bin/saphira-build-mcp
 
 CONFIGURE=0
 RULES_FILE=""
+VARIANT=auto
 for a in "$@"; do
 	case "$a" in
 	--configure-agents) CONFIGURE=1 ;;
+	--shared) VARIANT=shared ;;
+	--builtin) VARIANT=builtin ;;
 	--with-rules=*) RULES_FILE=${a#--with-rules=} ;;
 	--with-rules)
 		echo "install.sh: --with-rules needs FILE (use --with-rules=FILE)" >&2
@@ -47,16 +57,33 @@ for a in "$@"; do
 	esac
 done
 
+# System SQLite present? Decides shared vs builtin on auto.
+# Darwin carries libsqlite3.dylib in the base system; elsewhere
+# look in the loader's usual paths.
+system_sqlite() {
+	case "$(uname -s)" in
+	Darwin) test -f /usr/lib/libsqlite3.dylib ;;
+	*) (ldconfig -p 2>/dev/null | grep -q libsqlite3) || \
+		ls /lib/libsqlite3.so* /usr/lib/libsqlite3.so* \
+		   /usr/lib/*/libsqlite3.so* 2>/dev/null | grep -q . ;;
+	esac
+}
+
 OS=$(uname -s)
 if [ "$OS" = "Darwin" ]; then
-	BIN=saphira-build-mcp.osx
+	FAM=saphira-build-mcp.osx
 elif command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
-	BIN=saphira-build-mcp.musl
+	FAM=saphira-build-mcp.musl
 else
-	BIN=saphira-build-mcp.arch
+	FAM=saphira-build-mcp.arch
 fi
 # Never pick a Linux binary for macOS merely because the
 # architecture matches: Darwin is decided first, above.
+case "$VARIANT" in
+shared) BIN=$FAM ;;
+builtin) BIN=$FAM-builtin ;;
+*) if system_sqlite; then BIN=$FAM; else BIN=$FAM-builtin; fi ;;
+esac
 
 if [ ! -f "$HERE/$BIN" ]; then
 	echo "install.sh: no binary for this host (wanted $BIN)" >&2
@@ -91,6 +118,10 @@ if "$BINPATH" --list-tools >/dev/null 2>&1; then
 	echo "installed $BINPATH ($BIN, verified)"
 else
 	echo "install.sh: installed binary failed to run" >&2
+	case "$BIN" in
+	*-builtin) ;;
+	*) echo "install.sh: this host may lack system SQLite; retry with --builtin" >&2 ;;
+	esac
 	exit 1
 fi
 
