@@ -62,7 +62,7 @@ windows: $(SRC)
 
 windows-builtin: $(SRC)
 	@if [ -z "$(SQLITE_SRC)" ]; then echo "windows-builtin needs SQLITE_SRC=<sqlite3.c path>" >&2; exit 1; fi
-	$(MINGW_CC) $(WIN_CFLAGS) $(WIN_SQLITE_FLAGS) $(SRC) $(SQLITE_SRC) -o saphira-build-mcp.windows-builtin.exe
+	$(MINGW_CC) $(WIN_CFLAGS) $(WIN_SQLITE_FLAGS) -I$(dir $(SQLITE_SRC)) $(SRC) $(SQLITE_SRC) -o saphira-build-mcp.windows-builtin.exe
 	$(MINGW_STRIP) saphira-build-mcp.windows-builtin.exe
 
 $(BIN): $(OBJ)
