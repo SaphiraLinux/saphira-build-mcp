@@ -85,7 +85,7 @@ builtin) BIN=$FAM-builtin ;;
 *) if system_sqlite; then BIN=$FAM; else BIN=$FAM-builtin; fi ;;
 esac
 
-if [ ! -f "$HERE/$BIN" ]; then
+if [ ! -f "$HERE/bin/$BIN" ]; then
 	echo "install.sh: no binary for this host (wanted $BIN)" >&2
 	exit 1
 fi
@@ -93,14 +93,14 @@ fi
 # Checksum gate: sha256sum on Linux, shasum on macOS. No hasher,
 # no install.
 if command -v sha256sum >/dev/null 2>&1; then
-	SUM="sha256sum $HERE/$BIN"
+	SUM="sha256sum $HERE/bin/$BIN"
 elif command -v shasum >/dev/null 2>&1; then
-	SUM="shasum -a 256 $HERE/$BIN"
+	SUM="shasum -a 256 $HERE/bin/$BIN"
 else
 	echo "install.sh: need sha256sum or shasum to verify $BIN" >&2
 	exit 1
 fi
-want=$(grep " $BIN\$" "$HERE/SHA256SUMS" 2>/dev/null | cut -d' ' -f1 || true)
+want=$(grep " $BIN\$" "$HERE/bin/SHA256SUMS" 2>/dev/null | cut -d' ' -f1 || true)
 got=$($SUM | cut -d' ' -f1)
 if [ -z "$want" ] || [ "$want" != "$got" ]; then
 	echo "install.sh: checksum mismatch for $BIN (aborting)" >&2
@@ -108,7 +108,7 @@ if [ -z "$want" ] || [ "$want" != "$got" ]; then
 fi
 
 install -d "$DESTDIR$PREFIX/bin"
-install -m 0755 "$HERE/$BIN" "$BINPATH"
+install -m 0755 "$HERE/bin/$BIN" "$BINPATH"
 install -d "$DESTDIR$PREFIX/share/man/man1"
 install -m 0644 "$HERE/saphira-build-mcp.1" \
 	"$DESTDIR$PREFIX/share/man/man1/saphira-build-mcp.1"

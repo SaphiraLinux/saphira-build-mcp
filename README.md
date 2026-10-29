@@ -16,9 +16,9 @@ compiled in, zero database dependency):
 
 | Small (shared) | Large (builtin) | Platform |
 |---|---|---|
-| `saphira-build-mcp.osx` | `saphira-build-mcp.osx-builtin` | macOS, Apple Silicon |
-| `saphira-build-mcp.musl` | `saphira-build-mcp.musl-builtin` | Linux, musl libc |
-| `saphira-build-mcp.arch` | `saphira-build-mcp.arch-builtin` | Linux, glibc |
+| `bin/saphira-build-mcp.osx` | `bin/saphira-build-mcp.osx-builtin` | macOS, Apple Silicon |
+| `bin/saphira-build-mcp.musl` | `bin/saphira-build-mcp.musl-builtin` | Linux, musl libc |
+| `bin/saphira-build-mcp.arch` | `bin/saphira-build-mcp.arch-builtin` | Linux, glibc |
 
 The `-builtin` binaries carry SQLite inside (the `.musl` one is
 fully static); the small ones link the system SQLite — the musl
