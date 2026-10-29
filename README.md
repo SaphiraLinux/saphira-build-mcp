@@ -1,32 +1,91 @@
 # saphira-build-mcp
 
-Local Model Context Protocol server for the Saphira Linux package and
-build environment. It answers structured queries from recipes,
-APK/repository metadata, the build queue and retained logs, so agents
-no longer improvise those investigations by hand — and it keeps an
-Egg-local evidence journal (package notes and policy records with
-freshness pins), so the next agent inherits verified findings
-instead of rediscovering them.
+A local Model Context Protocol (MCP) server that gives AI agents a
+safe, structured window into a software build and package universe —
+and a durable memory to hand work between sessions. It answers
+questions from recipes, APK/repository metadata, the build queue and
+retained logs, so agents no longer improvise those investigations by
+hand. It keeps an evidence journal (package notes and policy records
+with freshness pins) and a register of session checkpoints, so the
+next agent inherits verified findings instead of rediscovering them.
 
 No signing, publication, installation or restart surface exists by
-design: builds queue for the daemon, bumps carry bumppkg's guards,
-and a staged package names the human-gated `sudo sign-apk-repo`
-ask instead of performing it.
+design: builds queue for the daemon, bumps carry the packager's
+guards, and a staged package names the human-gated
+`sudo sign-apk-repo` ask instead of performing it.
 Missing data sources produce explicit errors, never invented results.
 
-## Build and test
+## Why checkpoints exist
 
-```sh
-make STATIC=0   # dynamic musl build (static sqlite unavailable here)
-make test STATIC=0
+Agent context is finite and sessions die: restarts, compaction,
+crashes, the human closing the laptop. Without a handover protocol,
+everything the previous agent learned dies with it and the next one
+starts by interrogating the operator — or worse, by guessing.
+
+A checkpoint is a pre-restart write meant to be consumed
+post-restart: label, title, what was done, repository/branch/commit
+state, findings, and the next action. Checkpoints form a persistent
+register of unfinished work shared by all agents on the host:
+
+- `checkpoint_list` shows the active register (newest first, with a
+  total count). The `initialize` reply advertises the active set in
+  its `instructions` field, so every session starts aware of it.
+- `checkpoint_resume` consumes one row by id, by label (newest), or
+  the newest overall. Closed checkpoints stay resumable by id.
+- `checkpoint_close` retires finished work from the register without
+  deleting its history.
+
+The ritual matters more than the tools: a new agent lists the
+register and asks the operator whether to resume one, start fresh,
+or close one — it never auto-resumes. Before any restart, long
+build, or context-compacting step, the working agent saves a
+checkpoint. When work finishes, it closes it. The recovery test for
+every task is mechanical: *could another agent resume this from git
+plus docs plus the journal, without asking the previous agent what
+happened?* If not, the task is not complete.
+
+This server was built alongside agents doing real release
+engineering — queueing builds, diagnosing sandbox failures from
+retained logs, recording policy evidence, handing a half-finished
+port across days and machines. The checkpoint register, the
+append-only journal, and the rule below are what made that work.
+They are the product as much as the query tools.
+
+## Make your agents use checkpoints by default
+
+If you run opencode (or any MCP-capable agent) with this server,
+put a rules block like this in your `AGENTS.md` so handovers happen
+without being asked:
+
+```markdown
+## Session checkpoints (saphira-build-mcp)
+
+- Session start: call `checkpoint_list`; tell the operator what is
+  active and ask whether to resume one, start fresh, or close one.
+  Never auto-resume.
+- During work: record durable findings as they occur
+  (`package_notes_add`, checkpoints) — decisions, provenance,
+  next steps. Never wait until context is nearly exhausted.
+- Before any restart, compaction, or detached build: `checkpoint_save`
+  with a label, what was done, repo/branch/commit state, and the
+  next action.
+- When work finishes: `checkpoint_close` by id. History is kept;
+  the register stays clean.
+- A task is NOT DONE until another agent could resume it from git
+  plus docs plus the journal alone.
 ```
 
-`make test` runs hermetic `tests/test.sh`: fixture recipe tree,
-queue/repository databases, retained logs, fake `apk`, `saphira-build`
-and `bumppkg` doubles on PATH, a scratch journal database, and
-scripted JSON-RPC sessions. 210 checks, including SQLite discipline
-proof (repository DB byte-identical throughout; queue deltas and
-journal growth asserted exactly where the action tools run).
+How it works in practice: the agent's session ritual starts with a
+single `checkpoint_list` call. If the register holds an
+`enable-saphira-bucket` checkpoint from Tuesday, Wednesday's agent
+resumes it by id and sees the exact source and recipe commits, the
+last build verdict, and the outstanding human gate — then carries on
+instead of re-asking. Notes taken under a package name (`finding`,
+`decision`, `issue`, `success`, `failure`, `lesson`) accumulate into
+a per-package engineering log with authors and timestamps; policy
+records pin the revisions verified (recipe, registry and artifact
+digests), so changed pins report STALE and missing records report
+UNVERIFIED. A stale PASS never reads as valid.
 
 ## Protocol
 
@@ -36,33 +95,20 @@ journal growth asserted exactly where the action tools run).
 ./saphira-build-mcp --list-tools  # tools/list document
 ```
 
-Sixteen read-only tools: `package_search`, `package_info`,
-`package_dependencies`, `package_why_installed`, `package_installed`,
-`package_build_status`, `package_build_history`, `package_build_log`,
-`package_artifacts`, `build_queue`, `package_identity`,
-`package_notes_get`, `package_policy_status`, `package_readiness`,
-`checkpoint_resume`, `checkpoint_list`.
-Six take narrowly-scoped action: `package_notes_add`,
-`package_policy_record`, `checkpoint_save` and `checkpoint_close`
-write only to the journal; `build_request`
+Twenty-two built-ins. Sixteen read-only tools: `package_search`,
+`package_info`, `package_dependencies`, `package_why_installed`,
+`package_installed`, `package_build_status`,
+`package_build_history`, `package_build_log`, `package_artifacts`,
+`build_queue`, `package_identity`, `package_notes_get`,
+`package_policy_status`, `package_readiness`, `checkpoint_resume`,
+`checkpoint_list`. Six take narrowly-scoped action:
+`package_notes_add`, `package_policy_record`, `checkpoint_save` and
+`checkpoint_close` write only to the journal; `build_request`
 queues through the daemon intake (the daemon executes detached —
-the MCP never runs buildpkg itself); `package_bump` runs the
-bumppkg guards. Nothing here can sign, publish or install.
-
-Checkpoints are a persistent register of unfinished work shared by
-all agents on the host. The `initialize` reply advertises the active
-set (first five plus the total count) in its `instructions` field;
-`checkpoint_list` shows the active register, `checkpoint_resume`
-consumes one row by id, and `checkpoint_close` retires finished work
-without deleting its history. A new agent lists the register and asks
-the operator whether to resume one, start fresh, or close one — it
-never auto-resumes.
+the MCP never runs the build itself); `package_bump` runs the
+packager's guards. Nothing here can sign, publish or install.
 
 Disabled recipes are excluded unless `include_disabled` is set.
-
-Policy records pin the revisions verified (recipe, registry and
-artifact digests). Changed pins report STALE; missing records report
-UNVERIFIED. A stale PASS never reads as valid.
 
 ## Journal
 
@@ -78,37 +124,6 @@ Attribution defaults to `$SBM_AUTHOR` (set it once in
 `opencode.jsonc`, e.g. `"environment": {"SBM_AUTHOR": "muse"}`);
 the recorder field is MCP clientInfo metadata — client-reported and
 unverified.
-
-## Build and test
-
-```sh
-make STATIC=0   # dynamic musl build (static sqlite unavailable here)
-make test STATIC=0
-```
-
-`make test` runs hermetic `tests/test.sh`: fixture recipe tree,
-queue/repository databases, retained logs, a fake `apk` on PATH, and
-scripted JSON-RPC sessions. 210 checks, including SQLite read-only
-proof (fixture DB hashes byte-identical before and after) and the
-tools.conf extension suite (registry, allowlist, deny-lists, timeout,
-output caps, sandbox fail-closed, audit rows).
-
-## Protocol
-
-```sh
-./saphira-build-mcp --mcp         # stdio server (NDJSON primary,
-                                  # Content-Length fallback)
-./saphira-build-mcp --list-tools  # tools/list document
-```
-
-Twenty-two tools: `package_search`, `package_info`,
-`package_dependencies`, `package_why_installed`, `package_installed`,
-`package_build_status`, `package_build_history`, `package_build_log`,
-`package_artifacts`, `build_queue`, `package_identity`,
-plus the journal and checkpoint tools documented above —
-and any `/etc/saphira/mcp/tools.conf` externals (see below).
-
-Disabled recipes are excluded unless `include_disabled` is set.
 
 ## tools.conf: extensions without recompiling
 
@@ -136,8 +151,8 @@ command-executing filters (awk/find/xargs), compilers, and anything
 that builds, signs, publishes or installs is unregistrable, as is any
 exe, directory or fixed arg naming MCP-owned writable state
 (`queue.db`, `repository.db`, `notes.db`, staged incoming). An awk
-script can be valid and still execute commands, so 0.8.0 ships
-narrowly-defined commands only — no generic runner claims. Every
+script can be valid and still execute commands, so narrowly-defined
+commands only — no generic runner claims. Every
 invocation (including failures) is audited to the journal
 `tool_runs` table with tool, argv, agent, exit status and elapsed
 time. See `tools.conf.example` for the curated starting set.
@@ -164,6 +179,24 @@ is unchanged and no mode-dependent path is invented. Unset or
 `make install` follows privilege: root installs to `/usr/bin`,
 an ordinary user to `~/.local/bin` (explicit `PREFIX=` wins).
 
+## Build and test
+
+```sh
+make STATIC=0   # dynamic musl build (static sqlite unavailable here)
+make test STATIC=0
+```
+
+`make test` runs hermetic `tests/test.sh`: fixture recipe tree,
+queue/repository databases, retained logs, fake `apk`, `saphira-build`
+and `bumppkg` doubles on PATH, a scratch journal database, and
+scripted JSON-RPC sessions. 252 checks, including SQLite discipline
+proof (repository DB byte-identical throughout; queue deltas and
+journal growth asserted exactly where the action tools run), the
+tools.conf extension suite (registry, allowlist, deny-lists, timeout,
+output caps, sandbox fail-closed, audit rows), and the portable-mode
+suite (tool partition, call refusal, cross-process checkpoint
+recovery, invalid-mode failure, journal self-initialisation).
+
 ## Canonical builds
 
 Release tarballs here are source snapshots only. Canonical builds
@@ -176,3 +209,13 @@ there are no workflows, and none are wanted.
 
 Saphira-owned code under BUSL-1.1 (see LICENSE). Vendored JSON
 under MIT, attributed in THIRD_PARTY.md.
+
+---
+
+Happy recall to all humans and agents — not quite total recall.
+(Total Recall, 1990: memories bought off a shelf and implanted
+wholesale, no receipts, no refunds. This is the opposite: every
+record here has an author, a timestamp, and a source you can go and
+check. Write it down, pin the revision, hand it over.)
+
+— Saphira Linux, the friendly dragon
