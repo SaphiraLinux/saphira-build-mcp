@@ -2,6 +2,12 @@
 # install.sh: install the prebuilt saphira-build-mcp binary matching
 # this host, and optionally wire it into the agents installed here.
 #
+# Copyright (C) 2026 Andrew Smalley for and on behalf of AKADATA LIMITED.
+# Licensed under the Business Source License 1.1 (see LICENSE): free
+# for production and commercial use as part of Saphira Linux; other
+# commercial use needs a licence — https://www.akadata.co.uk
+# Saphira Linux — https://saphira.vm2.uk
+#
 #   ./install.sh                                   # binary + man page only
 #   ./install.sh --shared | --builtin              # force SQLite linkage
 #   ./install.sh --configure-agents                # plus detected agents

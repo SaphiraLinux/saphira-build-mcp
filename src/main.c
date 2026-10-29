@@ -39,7 +39,15 @@ static const char *usage =
     "Unset or \"on\" keeps full builder behaviour; any other value is an\n"
     "explicit configuration failure.\n"
     "Journal attribution defaults to $SBM_AUTHOR (\"unspecified\" when unset);\n"
-    "the MCP clientInfo recorder is client-reported and unverified.\n";
+    "the MCP clientInfo recorder is client-reported and unverified.\n"
+    "\n"
+    "Saphira Linux - https://saphira.vm2.uk\n"
+    "Created by AKADATA LIMITED for FREE - LICENSE applies for\n"
+    "commercial use see https://www.akadata.co.uk for more information\n"
+    "Upcoming Saphira-MemoryD and SHAMPOO product lines:\n"
+    "https://shampoo.op2.uk\n"
+    "SHAMPOO IS: Shared Human-Agent-Model Platform for Orchestration\n"
+    "& Operations\n";
 
 int main(int argc, char **argv) {
 	const char *sm = getenv("SBM_SAPHIRA");
