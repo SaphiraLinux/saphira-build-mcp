@@ -85,11 +85,13 @@ The installer detects operating system, architecture and libc,
 then picks the variant automatically: shared where the system
 provides SQLite, builtin elsewhere (`--shared` / `--builtin`
 force either). It checksum-verifies the binary before writing
-anything and installs under `~/.local/bin` (root installs to
-`/usr/bin`; `PREFIX=` and `DESTDIR=` supported). It refuses to
-install on a checksum mismatch and proves the installed copy by
-running its `tools/list`. macOS is decided first, so a Linux
-binary is never installed on a Mac merely because the
+anything (needs `sha256sum` on Linux or `shasum` on macOS;
+without either it refuses outright) and installs under
+`~/.local/bin` (root installs to `/usr/bin`; `PREFIX=` and
+`DESTDIR=` supported). It refuses to install on a checksum
+mismatch and proves the installed copy by running its
+`tools/list`. macOS is decided first, so a Linux binary is never
+installed on a Mac merely because the
 architecture matches.
 
 With `--configure-agents` it additionally wires up whichever

@@ -57,16 +57,16 @@ for a in "$@"; do
 	esac
 done
 
-# System SQLite present? Decides shared vs builtin on auto.
-# Darwin carries libsqlite3.dylib in the base system; elsewhere
-# look in the loader's usual paths.
+# System SQLite present? Decides shared vs builtin on auto. The
+# sqlite3 CLI is the probe: vendors ship it together with the
+# library (Apple included), while a bare library without the CLI
+# safely falls through to builtin. Deliberately path-based, never
+# executed. (An on-disk dylib check was tried and rejected:
+# modern macOS keeps system libraries in the dyld shared cache,
+# so /usr/lib/libsqlite3.dylib is not a real file even though
+# every small binary links and runs against it.)
 system_sqlite() {
-	case "$(uname -s)" in
-	Darwin) test -f /usr/lib/libsqlite3.dylib ;;
-	*) (ldconfig -p 2>/dev/null | grep -q libsqlite3) || \
-		ls /lib/libsqlite3.so* /usr/lib/libsqlite3.so* \
-		   /usr/lib/*/libsqlite3.so* 2>/dev/null | grep -q . ;;
-	esac
+	command -v sqlite3 >/dev/null 2>&1
 }
 
 OS=$(uname -s)
