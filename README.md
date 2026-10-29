@@ -47,20 +47,33 @@ It never builds, signs, publishes, installs or restarts anything,
 and it never executes recipe scripts. Missing data sources produce
 explicit errors, never invented results.
 
-## Portable recovery and Saphira builder modes
+## Capabilities: journal, builder state, build execution
+
+Three independent capabilities decide which tools are
+registered — so the server stays useful to builders even when
+it is not allowed to perform builds:
 
 | Capability | Portable (`off`) | Saphira builder (`on`) |
 |---|---|---|
 | Checkpoint save/list/resume/close | Yes | Yes |
 | Notes journal | Yes | Yes |
+| Policy records, status, readiness | Yes | Yes |
+| total_recall history search | Yes | Yes |
 | Configured external tools | Yes | Yes |
 | Saphira recipes and package queries | No | Yes |
-| Saphira build queue and bump | No | Yes |
-| Saphira policy/readiness tools | No | Yes |
+| Saphira build queue and identity | No | Yes |
+| Build request and version bump | No | Yes, unless `SBM_BUILD=off` |
 
-- `SBM_SAPHIRA=off` enables portable mode.
-- `SBM_SAPHIRA=on` or unset preserves builder mode.
-- Any other value fails at startup before serving anything.
+- `SBM_SAPHIRA=off` selects the journal capability without
+  builder state. `SBM_SAPHIRA=on` or unset preserves builder
+  mode.
+- `SBM_BUILD=off` gates only `build_request` and
+  `package_bump`, the two tools that change the world beyond
+  the journal. Combine both flags for journal-only operation.
+  Signing, publication and installation have no tools and stay
+  human gates by construction.
+- Any other value for either variable fails at startup before
+  serving anything.
 - `SBM_NOTES_DB` selects the local journal. Recommended for
   ordinary users: `~/.local/share/saphira-build-mcp/notes.db`.
   No mode-dependent path is ever invented.
@@ -403,12 +416,12 @@ Orchestration & Operations) — https://shampoo.op2.uk. Free
 distribution does not by itself grant unrestricted commercial
 rights; the licence terms govern.
 
-Twenty-three built-ins in builder mode (seventeen read-only plus
-six narrowly-scoped actions), seven in portable mode (checkpoints,
-notes and total_recall), plus any
-`/etc/saphira/mcp/tools.conf` externals (see below). Gated-off
-tools vanish from `tools/list` and refuse calls as unknown —
-never as silent success.
+Twenty-three built-ins in full mode (seventeen read-only plus
+six narrowly-scoped actions), ten in journal-only mode
+(checkpoints, notes, policy tools, readiness, total_recall),
+plus any `/etc/saphira/mcp/tools.conf` externals (see below).
+Gated-off tools vanish from `tools/list` and refuse calls as
+unknown — never as silent success.
 
 ## External tools and safety
 
@@ -527,7 +540,7 @@ Windows compatibility.
 `make test` runs hermetic `tests/test.sh`: fixture recipe tree,
 queue/repository databases, retained logs, fake `apk`,
 `saphira-build` and `bumppkg` doubles on PATH, a scratch journal
-database, and scripted JSON-RPC sessions. 314 checks, including
+database, and scripted JSON-RPC sessions. 351 checks, including
 SQLite discipline proof (repository DB byte-identical
 throughout; queue deltas and journal growth asserted exactly
 where the action tools run), the tools.conf extension suite

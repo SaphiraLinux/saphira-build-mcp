@@ -42,9 +42,15 @@ static const char *usage =
     "  SBM_PASSWD SBM_GROUP SBM_APKDB SBM_NOTES_DB SBM_TOOLS_CONF\n"
     "  SBM_BWRAP SBM_HOSTNAME SBM_USERNAME SBM_CWD\n"
     "Portable mode (SBM_SAPHIRA=off) gates every tool that needs builder\n"
-    "state; checkpoints, the notes journal and configured externals keep\n"
-    "working anywhere, with the journal at $SBM_NOTES_DB (recommended\n"
-    "for portable hosts: ~/.local/share/saphira-build-mcp/notes.db).\n"
+    "state; checkpoints, notes, policy records, readiness, total_recall\n"
+    "and configured externals keep working anywhere, with the journal\n"
+    "at $SBM_NOTES_DB (recommended for portable hosts:\n"
+    " ~/.local/share/saphira-build-mcp/notes.db).\n"
+    "Build execution is a separate capability (SBM_BUILD=off gates\n"
+    "build_request and package_bump only): a host can serve builder\n"
+    "state, keep the journal, or both, without build permission.\n"
+    "Signing, publication and installation have no tools and stay\n"
+    "human gates by construction.\n"
     "Unset or \"on\" keeps full builder behaviour; any other value is an\n"
     "explicit configuration failure.\n"
     "Journal attribution defaults to $SBM_AUTHOR (\"unspecified\" when unset);\n"
@@ -63,6 +69,7 @@ static const char *usage =
 
 int main(int argc, char **argv) {
 	const char *sm = getenv("SBM_SAPHIRA");
+	const char *bm = getenv("SBM_BUILD");
 	/* --help / -h / --version are pure text: they never start the
 	 * server, open a database, or emit protocol output, so they
 	 * bypass configuration validation. Everything else validates
@@ -79,6 +86,11 @@ int main(int argc, char **argv) {
 	if (sm && strcmp(sm, "on") != 0 && strcmp(sm, "off") != 0) {
 		fprintf(stderr, "saphira-build-mcp: invalid SBM_SAPHIRA='%s':"
 		        " want 'on' or 'off' (or unset)\n", sm);
+		return 2;
+	}
+	if (bm && strcmp(bm, "on") != 0 && strcmp(bm, "off") != 0) {
+		fprintf(stderr, "saphira-build-mcp: invalid SBM_BUILD='%s':"
+		        " want 'on' or 'off' (or unset)\n", bm);
 		return 2;
 	}
 	if (argc == 2 && strcmp(argv[1], "--mcp") == 0)

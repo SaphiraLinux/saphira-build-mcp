@@ -44,12 +44,21 @@ typedef struct {
 const char *path_tools_conf(void);
 
 /* Portable mode (SBM_SAPHIRA): 1 is builder mode (unset or "on"),
- * 0 is portable mode ("off": Saphira-state tools gated away, journal
+ * 0 is portable ("off": Saphira-state tools gated away, journal
  * and checkpoints stay on), -1 is an invalid value. main() refuses
  * -1 before serving anything, so the library paths below only ever
  * see 1 or 0; where -1 could theoretically arrive it fails closed
  * toward gated (never silently back to on). */
 int saphira_mode(void);
+
+/* Build-execution capability (SBM_BUILD): 1 means privileged build
+ * operations are exposed (unset or "on"), 0 gates build_request and
+ * package_bump away while journal, policy, checkpoint and recovery
+ * tools stay fully on, -1 is invalid (main() refuses it the same
+ * way). The two capabilities are independent: a host can serve
+ * builder state without build permission, or carry no builder
+ * state at all. */
+int build_mode(void);
 
 void conf_load(ext_conf *c);
 void conf_free(ext_conf *c);

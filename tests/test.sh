@@ -813,16 +813,19 @@ export SBM_TSV="$PVOID/accounts.tsv" SBM_PASSWD="$PVOID/passwd"
 export SBM_GROUP="$PVOID/group" SBM_APKDB="$PVOID/installed.db"
 export SBM_TOOLS_CONF="$PVOID/no-such.conf"
 out=$("$BIN" --list-tools)
-for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall; do
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness; do
 	t_contains "portable list keeps $n" "$out" "\"name\":\"$n\""
 done
-for n in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_policy_status package_policy_record package_readiness build_request package_bump; do
+for n in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity; do
 	t_not_contains "portable list drops $n" "$out" "\"name\":\"$n\""
+done
+# build permission is independent of saphira mode: on by default,
+# so both build tools stay listed here.
+for n in build_request package_bump; do
+	t_contains "portable list keeps build $n" "$out" "\"name\":\"$n\""
 done
 out=$(mcp '{"jsonrpc":"2.0","id":301,"method":"tools/call","params":{"name":"package_info","arguments":{"name":"pkg-a"}}}')
 t_contains "portable gated call unknown" "$out" '"code":-32602'
-out=$(mcp '{"jsonrpc":"2.0","id":302,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a","reason":"x","author":"t"}}}')
-t_contains "portable build_request unknown" "$out" '"code":-32602'
 # journal round-trip across processes: every mcp() call is its own
 # process, so save here and resume/list in later processes.
 out=$(mcp '{"jsonrpc":"2.0","id":303,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"portable-trip","body":"state across restarts"}}}')
@@ -861,6 +864,42 @@ export SBM_RECIPES="$FIX/recipes" SBM_QUEUE_DB="$FIX/queue.db"
 export SBM_REPO_DIR="$FIX/repo" SBM_INCOMING="$FIX/incoming"
 export SBM_TSV="$FIX/accounts.tsv" SBM_PASSWD="$FIX/passwd"
 export SBM_GROUP="$FIX/group" SBM_APKDB="$FIX/installed.db"
+
+# --- build-execution capability (SBM_BUILD) -----------------------------
+# Journal, policy, checkpoint and recovery tools stay on while the
+# two privileged mutations refuse as unknown. Inline env keeps this
+# block self-contained (nothing leaks past it).
+out=$(SBM_BUILD=off SBM_TOOLS_CONF="$FIX/no-such.conf" "$BIN" --list-tools)
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness package_search package_info build_queue; do
+	t_contains "build-off keeps $n" "$out" "\"name\":\"$n\""
+done
+for n in build_request package_bump; do
+	t_not_contains "build-off drops $n" "$out" "\"name\":\"$n\""
+done
+out=$(SBM_BUILD=off mcp '{"jsonrpc":"2.0","id":320,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a","reason":"x","author":"t"}}}')
+t_contains "build-off request unknown" "$out" '"code":-32602'
+out=$(SBM_BUILD=off mcp '{"jsonrpc":"2.0","id":321,"method":"tools/call","params":{"name":"package_bump","arguments":{"package":"pkg-a","reason":"x"}}}')
+t_contains "build-off bump unknown" "$out" '"code":-32602'
+out=$(SBM_BUILD=off mcp '{"jsonrpc":"2.0","id":322,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{}}}')
+t_not_contains "build-off journal works" "$out" '"code":-32602'
+# combined: no builder state and no build permission leaves the
+# journal set (4 checkpoints + 2 notes + total_recall + 3 policy).
+out=$(SBM_BUILD=off SBM_SAPHIRA=off SBM_TOOLS_CONF="$FIX/no-such.conf" "$BIN" --list-tools)
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness; do
+	t_contains "locked-down keeps $n" "$out" "\"name\":\"$n\""
+done
+for n in package_search build_queue build_request package_bump; do
+	t_not_contains "locked-down drops $n" "$out" "\"name\":\"$n\""
+done
+out=$(SBM_BUILD=bogus "$BIN" --list-tools 2>&1 || echo "rc=$?")
+t_contains "build invalid message" "$out" "invalid SBM_BUILD='bogus'"
+t_contains "build invalid rc" "$out" "rc=2"
+out=$(printf '%s\n' '{"jsonrpc":"2.0","id":323,"method":"tools/list"}' | SBM_BUILD=bogus "$BIN" --mcp 2>&1 || echo "rc=$?")
+t_contains "build invalid mcp message" "$out" "invalid SBM_BUILD='bogus'"
+t_contains "build invalid mcp rc" "$out" "rc=2"
+out=$(SBM_BUILD=on "$BIN" --list-tools)
+t_contains "build on keeps request" "$out" '"name":"build_request"'
+t_contains "build on keeps bump" "$out" '"name":"package_bump"'
 
 # --- framing: every stdout line is valid JSON ---------------------------
 mcp '{"jsonrpc":"2.0","id":30,"method":"tools/list"}' '{"jsonrpc":"2.0","id":31,"method":"ping"}' > "$ROOT/frames.txt"

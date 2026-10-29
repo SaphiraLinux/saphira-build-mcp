@@ -5411,8 +5411,6 @@ static const char *saphira_gated[] = {
 	"package_build_status", "package_build_history",
 	"package_build_log", "package_artifacts",
 	"build_queue", "package_identity",
-	"package_policy_status", "package_policy_record",
-	"package_readiness", "build_request", "package_bump",
 	NULL
 };
 
@@ -5420,6 +5418,27 @@ static int saphira_is_gated(const char *name) {
 	int i;
 	for (i = 0; saphira_gated[i]; i++) {
 		if (strcmp(saphira_gated[i], name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/* Privileged build operations: queueing builds and bumping
+ * revisions change the world beyond the journal, so they stand
+ * behind their own capability. Everything else — checkpoints,
+ * notes, policy records and status, readiness, total_recall —
+ * stays on wherever the journal lives, independent of build
+ * permission. Signing, publication and installation have no
+ * tools at all and remain human gates by construction. */
+static const char *build_gated[] = {
+	"build_request", "package_bump",
+	NULL
+};
+
+static int build_is_gated(const char *name) {
+	int i;
+	for (i = 0; build_gated[i]; i++) {
+		if (strcmp(build_gated[i], name) == 0)
 			return 1;
 	}
 	return 0;
@@ -5435,6 +5454,8 @@ void tools_list_json(gbuf *out) {
 		if (ext_is_off(&conf, base_tools[i].name))
 			continue;
 		if (saphira_mode() <= 0 && saphira_is_gated(base_tools[i].name))
+			continue;
+		if (build_mode() <= 0 && build_is_gated(base_tools[i].name))
 			continue;
 		if (!first)
 			gbuf_addch(out, ',');
@@ -5501,6 +5522,10 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
 		return -1;
 	}
 	if (saphira_mode() <= 0 && saphira_is_gated(name)) {
+		conf_free(&conf);
+		return -1;
+	}
+	if (build_mode() <= 0 && build_is_gated(name)) {
 		conf_free(&conf);
 		return -1;
 	}

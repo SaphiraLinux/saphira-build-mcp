@@ -55,6 +55,15 @@ int saphira_mode(void) {
 	return -1;
 }
 
+int build_mode(void) {
+	const char *v = getenv("SBM_BUILD");
+	if (!v || strcmp(v, "on") == 0)
+		return 1;
+	if (strcmp(v, "off") == 0)
+		return 0;
+	return -1;
+}
+
 static void conf_fail(ext_conf *c, const char *why) {
 	size_t n;
 	c->ok = 0;

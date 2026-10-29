@@ -1,4 +1,4 @@
-.TH SAPHIRA-BUILD-MCP 1 "October 2026" "saphira-build-mcp 0.10.7" "Saphira"
+.TH SAPHIRA-BUILD-MCP 1 "October 2026" "saphira-build-mcp 0.10.8" "Saphira"
 .SH NAME
 saphira-build-mcp \- Saphira build/package queries and evidence journal
 .SH SYNOPSIS
@@ -125,22 +125,43 @@ filters, compilers, and anything that builds, signs, publishes or
 installs, plus any path naming MCP-owned writable state. The
 runner is an additional capability, never a second route around
 build and package operations.
+.SH CAPABILITIES
+Three independent capabilities decide which tools are
+registered. Gated tools vanish from tools/list and refuse calls
+as unknown; the expose allowlist subtracts further but can never
+re-enable a gated tool, and checkpoint_* can never be switched
+off.
+.PP
+.B Journal
+(always on): checkpoints, notes, policy records and status,
+readiness, total_recall. Usable on any host with a journal,
+independent of build execution.
+.PP
+.B Saphira state
+(SBM_SAPHIRA=off gates it): all package_* readers,
+package_identity and build_queue — everything that needs the
+recipes tree, queue/repository/apk databases, accounts registry,
+retained logs or incoming.
+.PP
+.B Build execution
+(SBM_BUILD=off gates it): build_request and package_bump, the
+only tools that change the world beyond the journal. Signing,
+publication and installation have no tools at all and remain
+explicit human gates. Unset or
+.B on
+keeps full behaviour; any other value is an explicit
+configuration failure (exit status 2, nothing served).
 .SH PORTABLE MODE
 .B SBM_SAPHIRA=off
-gates every tool that needs Saphira builder state (/recipes tree,
-queue/repository/apk databases, accounts registry, retained logs,
-incoming): all package_* readers, package_identity, the policy
-tools, package_readiness, build_queue, build_request and
-package_bump vanish from tools/list and refuse calls as unknown.
-Checkpoints, the notes journal, total_recall and configured
+selects the journal capability without builder state: checkpoints,
+notes, policy tools, readiness, total_recall and configured
 externals keep working anywhere against the journal database
 alone, so session handoff, recovery and lessons-learned travel
-with the binary.
-Unset or
-.B on
-keeps full builder behaviour; any other value is an explicit
-configuration failure (exit status 2, nothing served). The
-expose allowlist keeps working inside both modes and still cannot
+with the binary. Combine with
+.B SBM_BUILD=off
+to also refuse build and bump operations while keeping every
+journal tool. The
+expose allowlist keeps working inside all modes and still cannot
 switch off checkpoint_*.
 .PP
 Portable hosts set
