@@ -1,4 +1,4 @@
-.TH SAPHIRA-BUILD-MCP 1 "October 2026" "saphira-build-mcp 0.9.6" "Saphira"
+.TH SAPHIRA-BUILD-MCP 1 "October 2026" "saphira-build-mcp 0.10.0" "Saphira"
 .SH NAME
 saphira-build-mcp \- Saphira build/package queries and evidence journal
 .SH SYNOPSIS
@@ -25,12 +25,13 @@ With
 .B --list-tools
 it prints the tools/list document (also the build-time self-check).
 .SH TOOLS
-Twenty-two tools. Sixteen are read-only: package_search,
+Twenty-three tools. Seventeen are read-only: package_search,
 package_info, package_dependencies, package_why_installed,
 package_installed, package_build_status, package_build_history,
 package_build_log, package_artifacts, build_queue,
 package_identity, package_notes_get, package_policy_status,
-package_readiness, checkpoint_resume, checkpoint_list. Six take
+package_readiness, checkpoint_resume, checkpoint_list,
+total_recall. Six take
 action with deliberately narrow authority: package_notes_add,
 package_policy_record, checkpoint_save and checkpoint_close write
 only to the journal; build_request queues through the daemon intake
@@ -55,6 +56,30 @@ Policy records pin the revisions they were verified against
 (recipe, registry and artifact digests). A record whose pins no
 longer match the live state reports STALE; absence of a record
 reports UNVERIFIED. Stale evidence is never presented as valid.
+.PP
+Execution provenance: every checkpoint, note, policy record and
+tool run can carry where it was written — hostname, username,
+working directory, a stable caller-supplied session id, the agent
+client, and whether that context came from the caller (client) or
+was observed by the server (server). All six fields are optional
+and nullable: unknown stays unknown, never fabricated, and
+pre-provenance history reads back without them. Resume prints
+the recorded working location alongside objective and next
+action; recovery must never cd, execute, or assume a saved path
+exists on another machine.
+.PP
+total_recall retrieves history the checkpoints summarise: ranked
+full-text query, chronological timeline, or paginated export over
+checkpoints, notes, policy evidence and tool-run metadata. Modes
+take scope filters (session, package, label, project, author,
+hostname, username, working directory), summaries by default with
+full bodies only on request, and tiered budgets (compact 4 KiB,
+standard 16 KiB, extended 64 KiB, deep 256 KiB) enforced before
+anything is returned, with cursors for continuation. It never
+runs automatically — checkpoint first, deeper recall only when
+asked. What was never recorded cannot be retrieved: tool outputs
+and conversation turns are not captured, and every response says
+so.
 .SH JOURNAL
 The journal lives in notes.db (live default
 /var/lib/saphira-build/notes.db on Egg) and is append-only:
@@ -107,9 +132,10 @@ queue/repository/apk databases, accounts registry, retained logs,
 incoming): all package_* readers, package_identity, the policy
 tools, package_readiness, build_queue, build_request and
 package_bump vanish from tools/list and refuse calls as unknown.
-Checkpoints, the notes journal and configured externals keep
-working anywhere against the journal database alone, so session
-handoff, recovery and lessons-learned travel with the binary.
+Checkpoints, the notes journal, total_recall and configured
+externals keep working anywhere against the journal database
+alone, so session handoff, recovery and lessons-learned travel
+with the binary.
 Unset or
 .B on
 keeps full builder behaviour; any other value is an explicit
@@ -138,6 +164,12 @@ fixtures for testing:
 .B SBM_AUTHOR
 sets the default journal attribution (a per-call author field
 overrides it; "unspecified" when neither is set).
+.PP
+.B SBM_HOSTNAME SBM_USERNAME SBM_CWD
+override the server-observed hostname, username and working
+directory recorded on journal writes. They exist for hermetic
+tests; production writes carry live values unless the caller
+supplied its own context.
 .PP
 .B SBM_SAPHIRA
 selects builder mode ("on", the default when unset) or portable

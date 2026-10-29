@@ -33,4 +33,32 @@ sqlite3 *db_open_notes(char *err, size_t errsz);
 /* Append one column as text; SQL NULL renders "-". */
 void sb_cell(gbuf *b, sqlite3_stmt *st, int col);
 
+/* Execution provenance carried on journal rows. All fields nullable
+ * in storage; empty here means unknown (bind NULL, never fabricate).
+ * origin is "client" when the caller supplied context, "server" for
+ * server-observed values. */
+typedef struct {
+	char session[128];
+	char host[256];
+	char user[256];
+	char cwd[1024];
+	char agent[64];
+	char origin[16];
+} prov_t;
+
+/* Fill from SBM_* fixture overrides, else live server values
+ * (gethostname/getpwuid/getcwd); failures leave fields empty.
+ * Origin is always "server": the client overlay in tools.c
+ * upgrades it to "client" when the caller supplies context. */
+void prov_server_fill(prov_t *p);
+
+/* Bind the six provenance columns at *idx (advanced past them);
+ * empty fields bind NULL, never fabricated. */
+void prov_bind(sqlite3_stmt *st, int *idx, const prov_t *p);
+
+/* Full-text retrieval index availability (1 when recall_index
+ * exists, else query mode falls back to LIKE). Evaluated on every
+ * journal open; process-lifetime thereafter. */
+int db_fts_ok(void);
+
 #endif

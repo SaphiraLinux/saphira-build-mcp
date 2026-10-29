@@ -206,6 +206,31 @@ work across days and machines. The register, the append-only
 journal, and the rules above are what made that work. They are
 the product as much as the query tools.
 
+Every checkpoint, note, policy record and tool run can carry its
+execution provenance: hostname, username, working directory, a
+stable caller-supplied session id, the agent client, and whether
+that context came from the caller or was observed by the server.
+Unknown stays unknown — pre-provenance history reads back
+without it, never with invented values. A year later, an agent
+can establish what was worked on, on which machine and account,
+in which directory, what was established, what failed and why,
+what remained unfinished, and what to do next — all without
+filesystem exploration, provided it was recorded in the first
+place.
+
+When checkpoints are not enough, `total_recall` retrieves the
+history behind them: ranked full-text query, chronological
+timeline, or paginated export over checkpoints, notes, policy
+evidence and tool-run metadata, filterable by session, package,
+label, project, author, hostname, username and working
+directory. Summaries by default, full bodies only on request,
+tiered budgets (compact 4 KiB, standard 16 KiB, extended 64 KiB,
+deep 256 KiB) enforced before anything returns, cursors for
+continuation. It never runs automatically: checkpoint first,
+deeper recall only when asked. And its honest boundary stands —
+tool outputs and conversation turns were never captured, so no
+retrieval system here can reproduce them.
+
 ## OpenCode configuration
 
 Working example (replace `USER` with the actual username; paths
@@ -372,11 +397,12 @@ Orchestration & Operations) — https://shampoo.op2.uk. Free
 distribution does not by itself grant unrestricted commercial
 rights; the licence terms govern.
 
-Twenty-two built-ins in builder mode (sixteen read-only plus six
-narrowly-scoped actions), six in portable mode (checkpoints and
-notes), plus any `/etc/saphira/mcp/tools.conf` externals (see
-below). Gated-off tools vanish from `tools/list` and refuse calls
-as unknown — never as silent success.
+Twenty-three built-ins in builder mode (seventeen read-only plus
+six narrowly-scoped actions), seven in portable mode (checkpoints,
+notes and total_recall), plus any
+`/etc/saphira/mcp/tools.conf` externals (see below). Gated-off
+tools vanish from `tools/list` and refuse calls as unknown —
+never as silent success.
 
 ## External tools and safety
 
@@ -462,7 +488,7 @@ sudo make install   # root: /usr/bin; user: ~/.local/bin
 `make test` runs hermetic `tests/test.sh`: fixture recipe tree,
 queue/repository databases, retained logs, fake `apk`,
 `saphira-build` and `bumppkg` doubles on PATH, a scratch journal
-database, and scripted JSON-RPC sessions. 252 checks, including
+database, and scripted JSON-RPC sessions. 314 checks, including
 SQLite discipline proof (repository DB byte-identical
 throughout; queue deltas and journal growth asserted exactly
 where the action tools run), the tools.conf extension suite
@@ -486,10 +512,13 @@ under MIT, attributed in THIRD_PARTY.md.
 
 ---
 
-Happy recall to all humans and agents — not quite total recall.
-(Total Recall, 1990: memories bought off a shelf and implanted
+Happy recall to all humans and agents — total recall now exists
+here as bounded retrieval, still not the implanted kind. (Total
+Recall, 1990: memories bought off a shelf and implanted
 wholesale, no receipts, no refunds. This is the opposite: every
-record here has an author, a timestamp, and a source you can go
-and check. Write it down, pin the revision, hand it over.)
+record here has an author, a timestamp, a recorded location, and
+a source you can go and check — and the retriever tells you
+exactly what it searched, what it did not, and what was never
+recorded. Write it down, pin the revision, hand it over.)
 
 — Saphira Linux, the friendly dragon

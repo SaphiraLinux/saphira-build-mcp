@@ -36,10 +36,16 @@ static void audit(const ext_tool *t, const char *author,
 	sqlite3_stmt *st = NULL;
 	char err[256];
 	char ts[32];
+	prov_t pv;
+	int bi;
 	const char *sql =
 	    "INSERT INTO tool_runs(tool,argv,class,author,recorder,"
-	    "exit_status,elapsed_ms,truncated,timed_out,created_at)"
-	    "VALUES(?,?,?,?,?,?,?,?,?,?)";
+	    "exit_status,elapsed_ms,truncated,timed_out,created_at,"
+	    "session_id,hostname,username,cwd,agent,ctx_origin)"
+	    "VALUES(?,?,?,?,?,?,?,?,?,?,?,"
+	    "?,?,?,?,?,?)";
+	/* Tool runs are server-observed: server provenance, no caller. */
+	prov_server_fill(&pv);
 	db = db_open_notes(err, sizeof err);
 	if (!db) {
 		fprintf(stderr, "sbm: tool_runs audit skipped: %s\n", err);
@@ -62,6 +68,10 @@ static void audit(const ext_tool *t, const char *author,
 	sqlite3_bind_int(st, 8, truncated);
 	sqlite3_bind_int(st, 9, timed_out);
 	sqlite3_bind_text(st, 10, ts, -1, SQLITE_TRANSIENT);
+	{
+		int bi = 11;
+		prov_bind(st, &bi, &pv);
+	}
 	if (sqlite3_step(st) != SQLITE_DONE)
 		fprintf(stderr, "sbm: tool_runs audit skipped: %s\n",
 		        sqlite3_errmsg(db));

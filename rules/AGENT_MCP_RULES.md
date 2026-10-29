@@ -14,6 +14,10 @@ body as the primary recovery record: objective, completed work,
 unfinished work, next action, blockers, anything unverified. Report
 those back, then stop and await instructions.
 
+Checkpoint first; `total_recall` only when deeper historical
+evidence is required. It retrieves what was recorded — never
+automatically, never unbounded.
+
 Do not go looking elsewhere during recall: no filesystem walks, no
 database inspection, no other MCP queries, no broad project
 discovery. Stay within the checkpoint's project and named scope.

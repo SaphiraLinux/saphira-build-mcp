@@ -573,6 +573,114 @@ out=$(SBM_NOTES_DB="$FIX/missing-notes.db" mcp '{"jsonrpc":"2.0","id":107,"metho
 t_contains "initialize missing journal static" "$out" '"instructions":"Session checkpoints are a persistent register'
 t_not_contains "initialize missing journal no count" "$out" "Active checkpoints ("
 
+# --- total_recall + provenance (0.10.0) --------------------------------
+# isolated journal: main-register counts above stay exactly as asserted.
+# BS holds one literal backslash for matching JSON-escaped envelope
+# content (a literal backslash in source would drown in quoting
+# layers; this keeps every needle unambiguous).
+TRDB="$FIX/tr-notes.db"
+export SBM_NOTES_DB="$TRDB"
+export SBM_HOSTNAME=egg-t SBM_USERNAME=ada-t SBM_CWD=/work/tr
+# client-supplied provenance round-trips exactly, marked client
+out=$(mcp '{"jsonrpc":"2.0","id":400,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"tr-w1","body":"kernel fault work","session_id":"tr-sess","hostname":"egg-t","username":"ada-t","cwd":"/work/tr","agent":"OpenCode"}}}')
+t_contains "prov checkpoint save" "$out" "recorded checkpoint 1 (label 'tr-w1')"
+out=$(mcp '{"jsonrpc":"2.0","id":401,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":1}}}')
+t_contains "prov resume where" "$out" "where: egg-t as ada-t in /work/tr (client, session tr-sess, agent OpenCode)"
+# server fill when the caller says nothing (SBM_* stand in for live)
+out=$(mcp '{"jsonrpc":"2.0","id":402,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"tr-w2","body":"server fill"}}}')
+t_contains "prov server save" "$out" "recorded checkpoint 2 (label 'tr-w2')"
+out=$(mcp '{"jsonrpc":"2.0","id":403,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":2}}}')
+t_contains "prov server where" "$out" "where: egg-t as ada-t in /work/tr (server)"
+t_not_contains "prov server no session shown" "$out" "session tr-sess"
+# notes + policy carry provenance too
+out=$(mcp '{"jsonrpc":"2.0","id":404,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"trpkg","kind":"finding","title":"tr note","body":"tr-unique-kernel-word alpha","session_id":"tr-sess"}}}')
+t_contains "prov note save" "$out" "recorded note 1 for trpkg"
+out=$(mcp '{"jsonrpc":"2.0","id":405,"method":"tools/call","params":{"name":"package_policy_record","arguments":{"package":"trpkg","check":"unix-identity","result":"PASS","evidence":{},"session_id":"tr-sess"}}}')
+t_contains "prov policy save" "$out" "recorded unix-identity=PASS"
+# query: ranked, snippet-marked, session-scoped
+out=$(mcp '{"jsonrpc":"2.0","id":406,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"query","query":"tr-unique-kernel-word","session_id":"tr-sess"}}}')
+t_contains "recall query finds" "$out" "tr note"
+t_contains "recall query snippet" "$out" "[tr-unique-kernel-word]"
+t_contains "recall query scope" "$out" "scope: session tr-sess"
+t_contains "recall query honest boundary" "$out" "not searched: tool outputs"
+# timeline: chronological, one shared environment preamble
+out=$(mcp '{"jsonrpc":"2.0","id":407,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline","session_id":"tr-sess"}}}')
+t_contains "recall timeline rows" "$out" "3 rows"
+t_contains "recall env preamble once" "$out" "environments (1):"
+t_contains "recall timeline cursor end" "$out" "cursor: end"
+t_not_contains "recall session excludes others" "$out" "server fill"
+# export pages of 2 with a cursor round-trip
+out=$(mcp '{"jsonrpc":"2.0","id":408,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"export","session_id":"tr-sess","limit":2}}}')
+t_contains "recall export json" "$out" "tr-w1"
+t_contains "recall export page cursor" "$out" "[page complete: cursor="
+cur=$(echo "$out" | sed -n 's/.*\[page complete: cursor=\([^]]*\)].*/\1/p' | head -1)
+out=$(mcp '{"jsonrpc":"2.0","id":409,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"export","session_id":"tr-sess","limit":2,"cursor":"'"$cur"'"}}}')
+t_contains "recall export page2" "$out" "policy_records"
+t_contains "recall export page2 end" "$out" "cursor: end"
+# export rows are well-formed JSON with the contracted keys
+out=$(mcp '{"jsonrpc":"2.0","id":430,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"export","session_id":"tr-sess","limit":5}}}')
+echo "$out" | python3 -c "import json,sys; text=json.load(sys.stdin)['result']['content'][0]['text']; rows=[json.loads(l) for l in text.splitlines() if l.strip().startswith('{')]; data=[r for r in rows if 'table' in r]; assert len(data)>=3, len(data); assert all(set(('table','id','session','created_at','body')) <= set(r) for r in data); print('export json valid')" > "$FIX/export-check.txt" || echo "EXPORT-JSON-INVALID" > "$FIX/export-check.txt"
+t_contains "recall export json valid" "$(cat "$FIX/export-check.txt")" "export json valid"
+# rows are atomic under the budget: two ~3 KiB full rows overflow
+# compact after the first, complete under deep
+bigtr=$(python3 -c "print('W: big recall payload ' + 'W'*2900 + ' tail-w-marker')")
+out=$(mcp '{"jsonrpc":"2.0","id":410,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"tr-big1","body":"'"$bigtr"'","session_id":"tr-bigsession"}}}')
+t_contains "recall big save1" "$out" "recorded checkpoint"
+out=$(mcp '{"jsonrpc":"2.0","id":411,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"tr-big2","body":"'"$bigtr"'","session_id":"tr-bigsession"}}}')
+t_contains "recall big save2" "$out" "recorded checkpoint"
+out=$(mcp '{"jsonrpc":"2.0","id":412,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline","session_id":"tr-bigsession","detail":"full"}}}')
+t_contains "recall compact truncates" "$out" "[truncated:"
+t_contains "recall compact cursor triple" "$out" "cursor="
+t_not_contains "recall compact no end" "$out" "cursor: end"
+out=$(mcp '{"jsonrpc":"2.0","id":413,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline","session_id":"tr-bigsession","detail":"full","budget":"deep"}}}')
+t_contains "recall deep completes" "$out" "cursor: end"
+t_contains "recall deep full row" "$out" "tail-w-marker"
+# summary shows the preview, not the tail
+out=$(mcp '{"jsonrpc":"2.0","id":414,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline","session_id":"tr-bigsession","budget":"deep"}}}')
+t_contains "recall summary completes" "$out" "cursor: end"
+t_not_contains "recall summary hides tail" "$out" "tail-w-marker"
+# invalid shapes are transport errors
+out=$(mcp '{"jsonrpc":"2.0","id":415,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"bogus"}}}')
+t_contains "recall bad mode -32602" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":416,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"query"}}}')
+t_contains "recall missing query -32602" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":417,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline","budget":"bogus"}}}')
+t_contains "recall bad budget -32602" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":418,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline","cursor":"garbage"}}}')
+t_contains "recall bad cursor -32602" "$out" '"code":-32602'
+# hostname/username/cwd filters (timeline)
+out=$(mcp '{"jsonrpc":"2.0","id":419,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline","hostname":"egg-t"}}}')
+t_contains "recall hostname filter" "$out" "scope:"
+t_contains "recall hostname rows" "$out" "rows:"
+out=$(mcp '{"jsonrpc":"2.0","id":420,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline","hostname":"nosuchhost"}}}')
+t_contains "recall hostname miss" "$out" "no matching records"
+out=$(mcp '{"jsonrpc":"2.0","id":421,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline","username":"ada-t","cwd":"/work/tr"}}}')
+t_contains "recall user cwd filter" "$out" "rows:"
+# cross-agent: same session id, different agent, shared recovery
+out=$(mcp '{"jsonrpc":"2.0","id":422,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"tr-x","body":"codex continues here","session_id":"tr-x","agent":"Codex"}}}')
+t_contains "recall cross save" "$out" "recorded checkpoint"
+out=$(mcp '{"jsonrpc":"2.0","id":423,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline","session_id":"tr-x"}}}')
+t_contains "recall cross session" "$out" "agent Codex"
+# pre-provenance journal: NULL fields stay NULL, history searchable
+sqlite3 "$FIX/oldprov-notes.db" "CREATE TABLE checkpoints(id INTEGER PRIMARY KEY,label TEXT NOT NULL,package TEXT NOT NULL DEFAULT '',title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL,author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',src_commit TEXT,recipe_commit TEXT,created_at TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',project TEXT NOT NULL DEFAULT '',workstream TEXT NOT NULL DEFAULT '',closed_at TEXT,closed_by TEXT); CREATE TABLE notes(id INTEGER PRIMARY KEY,package TEXT NOT NULL,kind TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL,author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',recipe_commit TEXT,created_at TEXT NOT NULL); INSERT INTO checkpoints(label,body,author,created_at) VALUES('old-cp','olduniqueword body here','ada','2026-10-20T00:00:00Z'); INSERT INTO notes(package,kind,body,author,created_at) VALUES('oldpkg','finding','olduniqueword note here','ada','2026-10-20T00:00:00Z');"
+out=$(SBM_NOTES_DB="$FIX/oldprov-notes.db" mcp '{"jsonrpc":"2.0","id":424,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline"}}}')
+t_contains "recall old rows present" "$out" "old-cp"
+t_contains "recall old env unknown" "$out" "unknown origin"
+t_contains "recall old cursor end" "$out" "cursor: end"
+out=$(SBM_NOTES_DB="$FIX/oldprov-notes.db" mcp '{"jsonrpc":"2.0","id":425,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"query","query":"olduniqueword"}}}')
+t_contains "recall old backfilled" "$out" "2 rows"
+out=$(SBM_NOTES_DB="$FIX/oldprov-notes.db" mcp '{"jsonrpc":"2.0","id":426,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":1}}}')
+t_contains "recall old resume works" "$out" "olduniqueword body here"
+t_not_contains "recall old resume no where" "$out" "where:"
+# total_recall never nudges startup: initialize stays checkpoint-only
+out=$(mcp '{"jsonrpc":"2.0","id":427,"method":"tools/list"}')
+t_contains "recall listed" "$out" '"name":"total_recall"'
+out=$(mcp '{"jsonrpc":"2.0","id":428,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
+t_not_contains "recall no startup nudge" "$out" "total_recall"
+# restore builder fixture env for the rest of the suite
+unset SBM_HOSTNAME SBM_USERNAME SBM_CWD
+export SBM_NOTES_DB="$FIX/notes.db"
+
 # --- tools.conf extensions --------------------------------------------
 # absent conf: built-ins only, no externals, never an error.
 out=$(SBM_TOOLS_CONF="$FIX/no-such.conf" mcp '{"jsonrpc":"2.0","id":200,"method":"tools/list"}')
@@ -705,7 +813,7 @@ export SBM_TSV="$PVOID/accounts.tsv" SBM_PASSWD="$PVOID/passwd"
 export SBM_GROUP="$PVOID/group" SBM_APKDB="$PVOID/installed.db"
 export SBM_TOOLS_CONF="$PVOID/no-such.conf"
 out=$("$BIN" --list-tools)
-for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add; do
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall; do
 	t_contains "portable list keeps $n" "$out" "\"name\":\"$n\""
 done
 for n in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_policy_status package_policy_record package_readiness build_request package_bump; do

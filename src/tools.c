@@ -2505,6 +2505,63 @@ static void resolve_credit(jv *args, char *author, size_t asz) {
 	snprintf(author, asz, "%s", a);
 }
 
+#define SESSION_CAP 127
+#define PROV_HOST_CAP 255
+#define PROV_USER_CAP 255
+#define PROV_CWD_CAP 1023
+#define PROV_AGENT_CAP 63
+
+/* Execution provenance for a journal write. Client-supplied
+ * arguments win and mark origin "client"; gaps fall back to the
+ * server fill (SBM_* overrides, else live values, origin
+ * "server"). Returns -1 on an overlong value (writers refuse);
+ * unknown fields stay empty so storage binds NULL. */
+static int prov_take(jv *args, prov_t *p) {
+	const char *v;
+	int client = 0;
+	prov_server_fill(p);
+	if (!args)
+		return 0;
+	v = arg_str(args, "session_id");
+	if (v && v[0]) {
+		if (strlen(v) > SESSION_CAP)
+			return -1;
+		snprintf(p->session, sizeof p->session, "%s", v);
+		client = 1;
+	}
+	v = arg_str(args, "hostname");
+	if (v && v[0]) {
+		if (strlen(v) > PROV_HOST_CAP)
+			return -1;
+		snprintf(p->host, sizeof p->host, "%s", v);
+		client = 1;
+	}
+	v = arg_str(args, "username");
+	if (v && v[0]) {
+		if (strlen(v) > PROV_USER_CAP)
+			return -1;
+		snprintf(p->user, sizeof p->user, "%s", v);
+		client = 1;
+	}
+	v = arg_str(args, "cwd");
+	if (v && v[0]) {
+		if (strlen(v) > PROV_CWD_CAP)
+			return -1;
+		snprintf(p->cwd, sizeof p->cwd, "%s", v);
+		client = 1;
+	}
+	v = arg_str(args, "agent");
+	if (v && v[0]) {
+		if (strlen(v) > PROV_AGENT_CAP)
+			return -1;
+		snprintf(p->agent, sizeof p->agent, "%s", v);
+		client = 1;
+	}
+	if (client)
+		snprintf(p->origin, sizeof p->origin, "client");
+	return 0;
+}
+
 static void utc_now(char out[21]) {
 	time_t t = time(NULL);
 	struct tm tm;
@@ -2684,7 +2741,8 @@ static int t_notes_add(jv *args, gbuf *text, int *is_error, char *err, size_t er
 	char author[CREDIT_CAP + 1], dberr[256], now[21], rcommit[41];
 	sqlite3 *db = NULL;
 	sqlite3_stmt *st = NULL;
-	int rc;
+	prov_t pv;
+	int rc, bi;
 	(void)err;
 	(void)errsz;
 	pkg = arg_str(args, "package");
@@ -2702,6 +2760,8 @@ static int t_notes_add(jv *args, gbuf *text, int *is_error, char *err, size_t er
 		return -1;
 	if (aa && strlen(aa) > CREDIT_CAP)
 		return -1;
+	if (prov_take(args, &pv) != 0)
+		return -1;
 	resolve_credit(args, author, sizeof author);
 	db = db_open_notes(dberr, sizeof dberr);
 	if (!db) {
@@ -2715,8 +2775,9 @@ static int t_notes_add(jv *args, gbuf *text, int *is_error, char *err, size_t er
 	utc_now(now);
 	git_recipe_commit(pkg, rcommit);
 	rc = sqlite3_prepare_v2(db,
-	    "INSERT INTO notes(package,kind,title,body,author,recorder,recipe_commit,created_at)"
-	    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", -1, &st, NULL);
+	    "INSERT INTO notes(package,kind,title,body,author,recorder,recipe_commit,created_at,"
+	    "session_id,hostname,username,cwd,agent,ctx_origin)"
+	    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)", -1, &st, NULL);
 	if (rc == SQLITE_OK) {
 		sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 2, kind, -1, SQLITE_TRANSIENT);
@@ -2729,6 +2790,8 @@ static int t_notes_add(jv *args, gbuf *text, int *is_error, char *err, size_t er
 		else
 			sqlite3_bind_null(st, 7);
 		sqlite3_bind_text(st, 8, now, -1, SQLITE_TRANSIENT);
+		bi = 9;
+		prov_bind(st, &bi, &pv);
 		rc = sqlite3_step(st);
 	}
 	if (rc == SQLITE_DONE) {
@@ -2859,7 +2922,8 @@ static int t_policy_record(jv *args, gbuf *text, int *is_error, char *err, size_
 	pins_t pins;
 	sqlite3 *db = NULL;
 	sqlite3_stmt *st = NULL;
-	int rc;
+	prov_t pv;
+	int rc, bi;
 	long sid;
 	(void)err;
 	(void)errsz;
@@ -2872,6 +2936,8 @@ static int t_policy_record(jv *args, gbuf *text, int *is_error, char *err, size_
 	if (!check_valid(check) || !result_valid(result))
 		return -1;
 	if (aa && strlen(aa) > CREDIT_CAP)
+		return -1;
+	if (prov_take(args, &pv) != 0)
 		return -1;
 	ev = args ? jv_get(args, "evidence") : NULL;
 	if (ev) {
@@ -2908,8 +2974,10 @@ static int t_policy_record(jv *args, gbuf *text, int *is_error, char *err, size_
 	rc = sqlite3_prepare_v2(db,
 	    "INSERT INTO policy_records(package,check_name,result,recipe_commit,"
 	    "recipe_digest,registry_digest,artifact_nvr,evidence_json,author,"
-	    "recorder,created_at,supersedes_id)"
-	    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", -1, &st, NULL);
+	    "recorder,created_at,supersedes_id,"
+	    "session_id,hostname,username,cwd,agent,ctx_origin)"
+	    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,"
+	    "?13,?14,?15,?16,?17,?18)", -1, &st, NULL);
 	if (rc == SQLITE_OK) {
 		sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 2, check, -1, SQLITE_TRANSIENT);
@@ -2932,6 +3000,8 @@ static int t_policy_record(jv *args, gbuf *text, int *is_error, char *err, size_
 			sqlite3_bind_int64(st, 12, (long long)sid);
 		else
 			sqlite3_bind_null(st, 12);
+		bi = 13;
+		prov_bind(st, &bi, &pv);
 		rc = sqlite3_step(st);
 	}
 	free(evcopy);
@@ -3289,16 +3359,20 @@ static long journal_note(const char *pkg, const char *kind,
 	sqlite3 *db = NULL;
 	sqlite3_stmt *st = NULL;
 	char now[21];
-	int rc;
+	prov_t pv;
+	int rc, bi;
 	long id = -1;
 	snprintf(dberr, dberrsz, "journal unavailable");
+	/* Auto-notes carry server provenance (no caller context). */
+	prov_take(NULL, &pv);
 	db = db_open_notes(dberr, dberrsz);
 	if (!db)
 		return -1;
 	utc_now(now);
 	rc = sqlite3_prepare_v2(db,
-	    "INSERT INTO notes(package,kind,title,body,author,recorder,created_at)"
-	    " VALUES(?1,?2,?3,?4,?5,?6,?7)", -1, &st, NULL);
+	    "INSERT INTO notes(package,kind,title,body,author,recorder,created_at,"
+	    "session_id,hostname,username,cwd,agent,ctx_origin)"
+	    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)", -1, &st, NULL);
 	if (rc == SQLITE_OK) {
 		sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 2, kind, -1, SQLITE_TRANSIENT);
@@ -3307,6 +3381,8 @@ static long journal_note(const char *pkg, const char *kind,
 		sqlite3_bind_text(st, 5, author, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 6, journal_recorder, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 7, now, -1, SQLITE_TRANSIENT);
+		bi = 8;
+		prov_bind(st, &bi, &pv);
 		rc = sqlite3_step(st);
 	}
 	if (rc == SQLITE_DONE)
@@ -3611,7 +3687,8 @@ static int t_checkpoint_save(jv *args, gbuf *text, int *is_error, char *err, siz
 	char author[CREDIT_CAP + 1], dberr[256], now[21];
 	sqlite3 *db = NULL;
 	sqlite3_stmt *st = NULL;
-	int rc;
+	prov_t pv;
+	int rc, bi;
 	(void)err;
 	(void)errsz;
 	label = arg_str(args, "label");
@@ -3645,6 +3722,8 @@ static int t_checkpoint_save(jv *args, gbuf *text, int *is_error, char *err, siz
 		return -1;
 	if (rcp && rcp[0] && !is_hex40(rcp))
 		return -1;
+	if (prov_take(args, &pv) != 0)
+		return -1;
 	resolve_credit(args, author, sizeof author);
 	db = db_open_notes(dberr, sizeof dberr);
 	if (!db) {
@@ -3658,8 +3737,10 @@ static int t_checkpoint_save(jv *args, gbuf *text, int *is_error, char *err, siz
 	utc_now(now);
 	rc = sqlite3_prepare_v2(db,
 	    "INSERT INTO checkpoints(label,package,title,body,author,recorder,"
-	    "src_commit,recipe_commit,created_at,status,project,workstream)"
-	    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',?10,?11)", -1, &st, NULL);
+	    "src_commit,recipe_commit,created_at,status,project,workstream,"
+	    "session_id,hostname,username,cwd,agent,ctx_origin)"
+	    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',?10,?11,"
+	    "?12,?13,?14,?15,?16,?17)", -1, &st, NULL);
 	if (rc == SQLITE_OK) {
 		sqlite3_bind_text(st, 1, label, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 2, pkg, -1, SQLITE_TRANSIENT);
@@ -3678,6 +3759,8 @@ static int t_checkpoint_save(jv *args, gbuf *text, int *is_error, char *err, siz
 		sqlite3_bind_text(st, 9, now, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 10, proj, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 11, ws, -1, SQLITE_TRANSIENT);
+		bi = 12;
+		prov_bind(st, &bi, &pv);
 		rc = sqlite3_step(st);
 	}
 	if (rc == SQLITE_DONE) {
@@ -3716,6 +3799,52 @@ static void print_checkpoint(gbuf *text, sqlite3_stmt *st) {
 		sb_cell(text, st, 6);
 	}
 	gbuf_addch(text, '\n');
+	/* Columns 15-20 are v0.10.0 execution provenance (session,
+	 * host, user, cwd, agent, origin). Printed when anything is
+	 * known; absent entirely for pre-provenance rows. Never
+	 * fabricate: NULL fields are omitted, not defaulted. */
+	if (sqlite3_column_count(st) > 20) {
+		const unsigned char *h = sqlite3_column_text(st, 16);
+		const unsigned char *u = sqlite3_column_text(st, 17);
+		const unsigned char *d = sqlite3_column_text(st, 18);
+		const unsigned char *o = sqlite3_column_text(st, 20);
+		const unsigned char *s = sqlite3_column_text(st, 15);
+		const unsigned char *a = sqlite3_column_text(st, 19);
+		if ((h && h[0]) || (u && u[0]) || (d && d[0])) {
+			gbuf_adds(text, "  where: ");
+			if (h && h[0]) {
+				gbuf_adds(text, (const char *)h);
+			} else {
+				gbuf_adds(text, "?");
+			}
+			if (u && u[0]) {
+				gbuf_adds(text, " as ");
+				gbuf_adds(text, (const char *)u);
+			}
+			if (d && d[0]) {
+				gbuf_adds(text, " in ");
+				gbuf_adds(text, (const char *)d);
+			}
+			if ((o && o[0]) || (s && s[0]) || (a && a[0])) {
+				gbuf_adds(text, " (");
+				if (o && o[0]) {
+					gbuf_adds(text, (const char *)o);
+				} else {
+					gbuf_adds(text, "?");
+				}
+				if (s && s[0]) {
+					gbuf_adds(text, ", session ");
+					gbuf_adds(text, (const char *)s);
+				}
+				if (a && a[0]) {
+					gbuf_adds(text, ", agent ");
+					gbuf_adds(text, (const char *)a);
+				}
+				gbuf_adds(text, ")");
+			}
+			gbuf_addch(text, '\n');
+		}
+	}
 	if (sqlite3_column_type(st, 2) != SQLITE_NULL &&
 	    sqlite3_column_text(st, 2)[0]) {
 		gbuf_adds(text, "  scope: ");
@@ -3810,14 +3939,17 @@ static int t_checkpoint_resume(jv *args, gbuf *text, int *is_error, char *err, s
 	/* Columns: 0 id, 1 label, 2 package, 3 title, 4 body, 5 author,
 	 * 6 recorder, 7 src_commit, 8 created_at, 9 recipe_commit,
 	 * 10 status, 11 project, 12 workstream, 13 closed_at,
-	 * 14 closed_by. Resume never filters on status: a closed
-	 * checkpoint stays consumable by id (history is never
-	 * deleted); the active register lives in checkpoint_list. */
+	 * 14 closed_by, 15 session_id, 16 hostname, 17 username,
+	 * 18 cwd, 19 agent, 20 ctx_origin. Resume never filters on
+	 * status: a closed checkpoint stays consumable by id
+	 * (history is never deleted); the active register lives in
+	 * checkpoint_list. */
 	if (id != -1) {
 		rc = sqlite3_prepare_v2(db,
 		    "SELECT id,label,package,title,body,author,recorder,"
 		    "src_commit,created_at,recipe_commit,"
-		    "status,project,workstream,closed_at,closed_by"
+		    "status,project,workstream,closed_at,closed_by,"
+		    "session_id,hostname,username,cwd,agent,ctx_origin"
 		    " FROM checkpoints WHERE id=?1", -1, &st, NULL);
 		if (rc == SQLITE_OK) {
 			sqlite3_bind_int64(st, 1, (long long)id);
@@ -3834,7 +3966,8 @@ static int t_checkpoint_resume(jv *args, gbuf *text, int *is_error, char *err, s
 		rc = sqlite3_prepare_v2(db,
 		    "SELECT id,label,package,title,body,author,recorder,"
 		    "src_commit,created_at,recipe_commit,"
-		    "status,project,workstream,closed_at,closed_by"
+		    "status,project,workstream,closed_at,closed_by,"
+		    "session_id,hostname,username,cwd,agent,ctx_origin"
 		    " FROM checkpoints WHERE label=?1 ORDER BY id DESC LIMIT 1",
 		    -1, &st, NULL);
 		if (rc == SQLITE_OK) {
@@ -3852,7 +3985,8 @@ static int t_checkpoint_resume(jv *args, gbuf *text, int *is_error, char *err, s
 		rc = sqlite3_prepare_v2(db,
 		    "SELECT id,label,package,title,body,author,recorder,"
 		    "src_commit,created_at,recipe_commit,"
-		    "status,project,workstream,closed_at,closed_by"
+		    "status,project,workstream,closed_at,closed_by,"
+		    "session_id,hostname,username,cwd,agent,ctx_origin"
 		    " FROM checkpoints ORDER BY id DESC LIMIT 1",
 		    -1, &st, NULL);
 		if (rc == SQLITE_OK) {
@@ -4190,7 +4324,8 @@ void checkpoint_instructions(gbuf *out) {
 	gbuf_adds(out, tmp);
 	if (v2) {
 		sqlite3_prepare_v2(db,
-		    "SELECT id,label,project,workstream,title FROM checkpoints"
+		    "SELECT id,label,project,workstream,title,"
+		    "hostname,username,cwd FROM checkpoints"
 		    " WHERE status='active' ORDER BY id DESC LIMIT "
 		    "5", -1, &st, NULL);
 	} else {
@@ -4222,6 +4357,36 @@ void checkpoint_instructions(gbuf *out) {
 				gbuf_adds(out, (const char *)w);
 				gbuf_adds(out, "'");
 			}
+			/* Columns 5-7 are v0.10.0 execution provenance;
+			 * shown when known so the register names where
+			 * each piece of work lives. */
+			if (sqlite3_column_count(st) > 7) {
+				const unsigned char *h =
+				    sqlite3_column_text(st, 5);
+				const unsigned char *u =
+				    sqlite3_column_text(st, 6);
+				const unsigned char *d =
+				    sqlite3_column_text(st, 7);
+				if ((h && h[0]) || (u && u[0]) ||
+				    (d && d[0])) {
+					gbuf_adds(out, " where ");
+					if (h && h[0])
+						gbuf_adds(out,
+						    (const char *)h);
+					else
+						gbuf_adds(out, "?");
+					if (u && u[0]) {
+						gbuf_adds(out, " as ");
+						gbuf_adds(out,
+						    (const char *)u);
+					}
+					if (d && d[0]) {
+						gbuf_adds(out, " in ");
+						gbuf_adds(out,
+						    (const char *)d);
+					}
+				}
+			}
 			instr_title(out, sqlite3_column_text(st, 4));
 			n++;
 		}
@@ -4238,9 +4403,907 @@ void checkpoint_instructions(gbuf *out) {
 }
 
 /* ------------------------------------------------------------------ */
+/* total_recall                                                          */
+/* ------------------------------------------------------------------ */
+/* Bounded historical retrieval over the journal: FTS5/BM25 ranked
+ * query, chronological timeline, and paginated export. This is not
+ * perfect memory — it retrieves only what was recorded (notes,
+ * checkpoints, policy evidence, tool-run metadata; tool outputs
+ * and conversation turns were never captured). Checkpoints restore
+ * working state cheaply; total_recall digs deeper only when asked,
+ * never automatically. */
+#define TR_LIMIT_DFLT 20
+#define TR_LIMIT_MAX 100
+
+static long tr_tier_bytes(const char *budget) {
+	if (!budget || strcmp(budget, "compact") == 0)
+		return 4096;
+	if (strcmp(budget, "standard") == 0)
+		return 16384;
+	if (strcmp(budget, "extended") == 0)
+		return 65536;
+	if (strcmp(budget, "deep") == 0)
+		return 262144;
+	return -1;
+}
+
+/* Split a query into FTS5 phrase tokens joined by OR. Tokens are
+ * double-quoted with embedded quotes doubled (the documented
+ * escape); tokens without alphanumerics are dropped. Returns -1
+ * when nothing searchable remains. */
+static int tr_match_expr(const char *query, char *out, size_t outsz) {
+	size_t pos = 0;
+	int first = 1, any = 0;
+	const char *p = query;
+	out[0] = 0;
+	while (*p) {
+		const char *tok;
+		size_t len = 0;
+		int alnum = 0;
+		size_t i;
+		while (*p && (*p == ' ' || *p == '\t' || *p == '\n'))
+			p++;
+		if (!*p)
+			break;
+		tok = p;
+		while (*p && *p != ' ' && *p != '\t' && *p != '\n') {
+			if ((*p >= 'A' && *p <= 'Z') ||
+			    (*p >= 'a' && *p <= 'z') ||
+			    (*p >= '0' && *p <= '9'))
+				alnum = 1;
+			p++;
+			len++;
+		}
+		if (!alnum || len == 0 || len > 128)
+			continue;
+		if (!first) {
+			if (pos + 4 >= outsz)
+				return -1;
+			memcpy(out + pos, " OR ", 4);
+			pos += 4;
+		}
+		first = 0;
+		if (pos + 1 >= outsz)
+			return -1;
+		out[pos++] = '"';
+		for (i = 0; i < len; i++) {
+			if (tok[i] == '"') {
+				if (pos + 2 >= outsz)
+					return -1;
+				out[pos++] = '"';
+				out[pos++] = '"';
+			} else {
+				if (pos + 1 >= outsz)
+					return -1;
+				out[pos++] = tok[i];
+			}
+		}
+		if (pos + 1 >= outsz)
+			return -1;
+		out[pos++] = '"';
+		any = 1;
+	}
+	out[pos] = 0;
+	return any ? 0 : -1;
+}
+
+/* Escape LIKE metacharacters with backslash. */
+static void tr_like_esc(const char *s, char *out, size_t outsz) {
+	size_t pos = 0;
+	for (; *s && pos + 2 < outsz; s++) {
+		if (*s == '%' || *s == '_' || *s == '\\')
+			out[pos++] = '\\';
+		out[pos++] = *s;
+	}
+	out[pos] = 0;
+}
+
+typedef struct {
+	char *session, *package, *label, *kind, *title, *body, *author;
+	char *host, *user, *cwd, *agent, *origin, *created, *table;
+	long long sid;
+	double rank;
+	char *snippet;
+} tr_row;
+
+static char *tr_dup(const unsigned char *s) {
+	const char *t = s ? (const char *)s : "";
+	char *d = malloc(strlen(t) + 1);
+	if (d)
+		memcpy(d, t, strlen(t) + 1);
+	return d;
+}
+
+/* Free one row's heap strings (the slot itself is caller-owned;
+ * never frees r). */
+static void tr_free_row(tr_row *r) {
+	free(r->session);
+	free(r->package);
+	free(r->label);
+	free(r->kind);
+	free(r->title);
+	free(r->body);
+	free(r->author);
+	free(r->host);
+	free(r->user);
+	free(r->cwd);
+	free(r->agent);
+	free(r->origin);
+	free(r->created);
+	free(r->table);
+	free(r->snippet);
+}
+
+/* Free n rows' strings plus the array itself. */
+static void tr_free_rows(tr_row *rows, int n) {
+	int i;
+	if (!rows)
+		return;
+	for (i = 0; i < n; i++)
+		tr_free_row(&rows[i]);
+	free(rows);
+}
+
+/* Cursor: timeline/export carry "created_at|table|id", query mode
+ * carries "o<offset>". Parse into triple (table validated) or
+ * offset; garbage means start over (cursor ignored, never fatal). */
+static int tr_parse_cursor(const char *cursor, char *created, size_t csz,
+                           char *table, size_t tsz, long long *sid,
+                           long *offset) {
+	const char *a, *b;
+	size_t n;
+	*offset = 0;
+	if (!cursor || !cursor[0])
+		return 0;
+	if (cursor[0] == 'o') {
+		char *end = NULL;
+		long o = strtol(cursor + 1, &end, 10);
+		if (end && *end == 0 && o >= 0) {
+			*offset = o;
+			return 1;
+		}
+		return 0;
+	}
+	a = strchr(cursor, '|');
+	if (!a)
+		return 0;
+	b = strchr(a + 1, '|');
+	if (!b || strchr(b + 1, '|'))
+		return 0;
+	n = (size_t)(a - cursor);
+	if (n == 0 || n >= csz)
+		return 0;
+	memcpy(created, cursor, n);
+	created[n] = 0;
+	n = (size_t)(b - (a + 1));
+	if (n == 0 || n >= tsz)
+		return 0;
+	memcpy(table, a + 1, n);
+	table[n] = 0;
+	if (strcmp(table, "checkpoints") != 0 &&
+	    strcmp(table, "notes") != 0 &&
+	    strcmp(table, "policy_records") != 0 &&
+	    strcmp(table, "tool_runs") != 0 &&
+	    strcmp(table, "session_events") != 0)
+		return 0;
+	{
+		char *end = NULL;
+		long long id = strtoll(b + 1, &end, 10);
+		if (!end || *end != 0 || id <= 0)
+			return 0;
+		*sid = id;
+	}
+	return 2;
+}
+/* Fetch one row's display fields by (table, id) into r (all fields
+ * heap-duplicated; missing row leaves r zeroed). Returns 1 when
+ * found, 0 otherwise. */
+static int tr_fetch(sqlite3 *db, const char *table, long long id,
+                    tr_row *r) {
+	sqlite3_stmt *st = NULL;
+	const char *sql = NULL;
+	memset(r, 0, sizeof *r);
+	if (strcmp(table, "checkpoints") == 0)
+		sql = "SELECT session_id,package,label,'checkpoint',title,"
+		      "body,author,hostname,username,cwd,agent,ctx_origin,"
+		      "created_at FROM checkpoints WHERE id=?1";
+	else if (strcmp(table, "notes") == 0)
+		sql = "SELECT session_id,package,'',kind,title,"
+		      "body,author,hostname,username,cwd,agent,ctx_origin,"
+		      "created_at FROM notes WHERE id=?1";
+	else if (strcmp(table, "policy_records") == 0)
+		sql = "SELECT session_id,package,'','policy',check_name,"
+		      "evidence_json,author,hostname,username,cwd,agent,"
+		      "ctx_origin,created_at FROM policy_records WHERE id=?1";
+	else if (strcmp(table, "tool_runs") == 0)
+		sql = "SELECT session_id,'','','tool-run',tool,"
+		      "argv,author,hostname,username,cwd,agent,ctx_origin,"
+		      "created_at FROM tool_runs WHERE id=?1";
+	else if (strcmp(table, "session_events") == 0)
+		sql = "SELECT session_id,package,label,event,title,"
+		      "body,author,hostname,username,cwd,agent,ctx_origin,"
+		      "created_at FROM session_events WHERE id=?1";
+	else
+		return 0;
+	if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+		return 0;
+	sqlite3_bind_int64(st, 1, id);
+	if (sqlite3_step(st) != SQLITE_ROW) {
+		sqlite3_finalize(st);
+		return 0;
+	}
+	r->session = tr_dup(sqlite3_column_text(st, 0));
+	r->package = tr_dup(sqlite3_column_text(st, 1));
+	r->label = tr_dup(sqlite3_column_text(st, 2));
+	r->kind = tr_dup(sqlite3_column_text(st, 3));
+	r->title = tr_dup(sqlite3_column_text(st, 4));
+	r->body = tr_dup(sqlite3_column_text(st, 5));
+	r->author = tr_dup(sqlite3_column_text(st, 6));
+	r->host = tr_dup(sqlite3_column_text(st, 7));
+	r->user = tr_dup(sqlite3_column_text(st, 8));
+	r->cwd = tr_dup(sqlite3_column_text(st, 9));
+	r->agent = tr_dup(sqlite3_column_text(st, 10));
+	r->origin = tr_dup(sqlite3_column_text(st, 11));
+	r->created = tr_dup(sqlite3_column_text(st, 12));
+	r->table = tr_dup((const unsigned char *)table);
+	r->sid = id;
+	sqlite3_finalize(st);
+	if (!r->session || !r->package || !r->label || !r->kind ||
+	    !r->title || !r->body || !r->author || !r->host ||
+	    !r->user || !r->cwd || !r->agent || !r->origin ||
+	    !r->created || !r->table) {
+		tr_free_row(r);
+		memset(r, 0, sizeof *r);
+		return 0;
+	}
+	return 1;
+}
+
+/* Print one result row. Summary shows the title line plus snippet
+ * (or body preview); full prints the whole body indented. */
+static void tr_print_row(gbuf *out, const tr_row *r, int full, int env) {
+	char tmp[128];
+	snprintf(tmp, sizeof tmp, "- [%s #%lld]",
+	         r->table, r->sid);
+	gbuf_adds(out, tmp);
+	if (r->label[0]) {
+		gbuf_adds(out, " label '");
+		gbuf_adds(out, r->label);
+		gbuf_adds(out, "'");
+	}
+	if (r->title[0]) {
+		gbuf_adds(out, " ");
+		gbuf_adds(out, r->title);
+	}
+	gbuf_adds(out, " | session ");
+	gbuf_adds(out, r->session[0] ? r->session : "-");
+	gbuf_adds(out, " ");
+	gbuf_adds(out, r->created);
+	snprintf(tmp, sizeof tmp, " env:%d", env);
+	gbuf_adds(out, tmp);
+	if (r->agent[0]) {
+		gbuf_adds(out, " agent ");
+		gbuf_adds(out, r->agent);
+	}
+	gbuf_addch(out, '\n');
+	if (full) {
+		indented(out, r->body);
+	} else if (r->snippet && r->snippet[0]) {
+		gbuf_adds(out, "  ");
+		gbuf_adds(out, r->snippet);
+		gbuf_addch(out, '\n');
+	} else {
+		size_t n = strlen(r->body);
+		gbuf_adds(out, "  ");
+		if (n > 160) {
+			gbuf_addn(out, r->body, 160);
+			gbuf_adds(out, "...\n");
+		} else {
+			gbuf_adds(out, r->body);
+			gbuf_addch(out, '\n');
+		}
+	}
+}
+
+/* Print one result row as a JSON line (export mode). */
+static void tr_print_json(gbuf *out, const tr_row *r, int env) {
+	char tmp[128];
+	gbuf_adds(out, "{\"table\":\"");
+	gbuf_adds(out, r->table);
+	gbuf_adds(out, "\",\"id\":");
+	snprintf(tmp, sizeof tmp, "%lld", r->sid);
+	gbuf_adds(out, tmp);
+	gbuf_adds(out, ",\"created_at\":\"");
+	gbuf_adds(out, r->created);
+	gbuf_adds(out, "\",\"session\":\"");
+	gbuf_adds(out, r->session);
+	gbuf_adds(out, "\",\"package\":\"");
+	gbuf_adds(out, r->package);
+	gbuf_adds(out, "\",\"label\":\"");
+	gbuf_adds(out, r->label);
+	gbuf_adds(out, "\",\"kind\":\"");
+	gbuf_adds(out, r->kind);
+	gbuf_adds(out, "\",\"title\":");
+	json_escape(out, r->title, strlen(r->title));
+	gbuf_adds(out, ",\"body\":");
+	json_escape(out, r->body, strlen(r->body));
+	gbuf_adds(out, ",\"author\":\"");
+	gbuf_adds(out, r->author);
+	gbuf_adds(out, "\",\"host\":\"");
+	gbuf_adds(out, r->host);
+	gbuf_adds(out, "\",\"user\":\"");
+	gbuf_adds(out, r->user);
+	gbuf_adds(out, "\",\"cwd\":\"");
+	gbuf_adds(out, r->cwd);
+	gbuf_adds(out, "\",\"agent\":\"");
+	gbuf_adds(out, r->agent);
+	gbuf_adds(out, "\",\"origin\":\"");
+	gbuf_adds(out, r->origin);
+	snprintf(tmp, sizeof tmp, "\",\"env\":%d}\n", env);
+	gbuf_adds(out, tmp);
+}
+
+/* Environment index for compact responses: distinct
+ * (host,user,cwd,origin) tuples printed once, rows reference by
+ * number. Returns the index (appends when new). */
+static int tr_env_index(char eh[][256], char eu[][256], char ed[][1024],
+                        char eo[][16], int *nenv, const tr_row *r) {
+	int i;
+	for (i = 0; i < *nenv; i++) {
+		if (strcmp(eh[i], r->host) == 0 &&
+		    strcmp(eu[i], r->user) == 0 &&
+		    strcmp(ed[i], r->cwd) == 0 &&
+		    strcmp(eo[i], r->origin) == 0)
+			return i + 1;
+	}
+	if (*nenv >= 100)
+		return 1;
+	snprintf(eh[*nenv], 256, "%s", r->host);
+	snprintf(eu[*nenv], 256, "%s", r->user);
+	snprintf(ed[*nenv], 1024, "%s", r->cwd);
+	snprintf(eo[*nenv], 16, "%s", r->origin);
+	(*nenv)++;
+	return *nenv;
+}
+
+static void tr_print_envs(gbuf *out, char eh[][256], char eu[][256],
+                          char ed[][1024], char eo[][16], int nenv) {
+	int i;
+	char tmp[64];
+	snprintf(tmp, sizeof tmp, "environments (%d):\n", nenv);
+	gbuf_adds(out, tmp);
+	for (i = 0; i < nenv; i++) {
+		snprintf(tmp, sizeof tmp, "  [%d] ", i + 1);
+		gbuf_adds(out, tmp);
+		if (eh[i][0] || eu[i][0] || ed[i][0]) {
+			gbuf_adds(out, eh[i][0] ? eh[i] : "?");
+			if (eu[i][0]) {
+				gbuf_adds(out, " as ");
+				gbuf_adds(out, eu[i]);
+			}
+			if (ed[i][0]) {
+				gbuf_adds(out, " in ");
+				gbuf_adds(out, ed[i]);
+			}
+			gbuf_adds(out, " (");
+			gbuf_adds(out, eo[i][0] ? eo[i] : "?");
+			gbuf_adds(out, ")\n");
+		} else {
+			gbuf_adds(out, "unknown origin\n");
+		}
+	}
+}
+
+static int t_total_recall(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *mode, *query, *session, *pkg, *label, *proj, *aa;
+	const char *detail, *budget, *cursor;
+	const char *fh, *fu, *fc;
+	long limit, tier;
+	int bad = 0, full = 0, is_export = 0, is_query = 0;
+	char dberr[256];
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	tr_row *rows = NULL;
+	int nrows = 0, scanned = 0;
+	char eh[100][256], eu[100][256], ed[100][1024], eo[100][16];
+	int nenv = 0;
+	gbuf out;
+	char tmp[256];
+	char created[64] = "", ctable[32] = "";
+	long long csid = 0;
+	long coffset = 0;
+	int have_cursor = 0;
+	(void)err;
+	(void)errsz;
+	mode = arg_str(args, "mode");
+	if (!mode || !mode[0])
+		mode = "timeline";
+	if (strcmp(mode, "query") != 0 && strcmp(mode, "timeline") != 0 &&
+	    strcmp(mode, "export") != 0)
+		return -1;
+	is_query = strcmp(mode, "query") == 0;
+	is_export = strcmp(mode, "export") == 0;
+	query = arg_str(args, "query");
+	if (is_query && (!query || !query[0]))
+		return -1;
+	session = arg_str(args, "session_id");
+	pkg = arg_str(args, "package");
+	label = arg_str(args, "label");
+	proj = arg_str(args, "project");
+	aa = arg_str(args, "author");
+	fh = arg_str(args, "hostname");
+	fu = arg_str(args, "username");
+	fc = arg_str(args, "cwd");
+	if ((session && strlen(session) > SESSION_CAP) ||
+	    (pkg && strlen(pkg) > 512) || (label && strlen(label) > 512) ||
+	    (proj && strlen(proj) > 512) || (aa && strlen(aa) > CREDIT_CAP) ||
+	    (query && strlen(query) > 512) ||
+	    (fh && strlen(fh) > PROV_HOST_CAP) ||
+	    (fu && strlen(fu) > PROV_USER_CAP) ||
+	    (fc && strlen(fc) > PROV_CWD_CAP))
+		return -1;
+	detail = arg_str(args, "detail");
+	if (!detail || !detail[0])
+		detail = "summary";
+	if (strcmp(detail, "summary") != 0 && strcmp(detail, "full") != 0)
+		return -1;
+	full = strcmp(detail, "full") == 0;
+	budget = arg_str(args, "budget");
+	tier = tr_tier_bytes(budget);
+	if (tier < 0)
+		return -1;
+	limit = clamp_long(arg_long(args, "limit", TR_LIMIT_DFLT, &bad), 1, TR_LIMIT_MAX);
+	if (bad)
+		return -1;
+	cursor = arg_str(args, "cursor");
+	if (cursor && cursor[0]) {
+		int kind = tr_parse_cursor(cursor, created, sizeof created,
+		                           ctable, sizeof ctable, &csid,
+		                           &coffset);
+		if (kind == 0)
+			return -1;
+		have_cursor = kind;
+	}
+	db = db_open_notes(dberr, sizeof dberr);
+	if (!db) {
+		*is_error = 1;
+		gbuf_adds(text, "journal unavailable: ");
+		gbuf_adds(text, dberr);
+		gbuf_addch(text, '\n');
+		prov(text, "notes.db (local journal)");
+		return 0;
+	}
+	rows = calloc((size_t)limit, sizeof *rows);
+	if (!rows) {
+		sqlite3_close(db);
+		*is_error = 1;
+		gbuf_adds(text, "internal error: out of memory\n");
+		return 0;
+	}
+	if (is_query) {
+		char match[2048];
+		if (tr_match_expr(query, match, sizeof match) != 0) {
+			free(rows);
+			sqlite3_close(db);
+			return -1;
+		}
+		if (db_fts_ok()) {
+			int rc = sqlite3_prepare_v2(db,
+			    "SELECT source_table,source_id,"
+			    "snippet(recall_index,5,'[',']','...',48)"
+			    " FROM recall_index WHERE recall_index MATCH ?1"
+			    " AND (?2 IS NULL OR session_id = ?2)"
+			    " AND (?3 IS NULL OR package = ?3)"
+			    " AND (?4 IS NULL OR label = ?4)"
+			    " ORDER BY bm25(recall_index),source_table,source_id"
+			    " LIMIT ?5 OFFSET ?6", -1, &st, NULL);
+			if (rc != SQLITE_OK) {
+				free(rows);
+				sqlite3_close(db);
+				*is_error = 1;
+				gbuf_adds(text, "journal query failed\n");
+				return 0;
+			}
+			sqlite3_bind_text(st, 1, match, -1, SQLITE_TRANSIENT);
+			if (session && session[0])
+				sqlite3_bind_text(st, 2, session, -1, SQLITE_TRANSIENT);
+			else
+				sqlite3_bind_null(st, 2);
+			if (pkg && pkg[0])
+				sqlite3_bind_text(st, 3, pkg, -1, SQLITE_TRANSIENT);
+			else
+				sqlite3_bind_null(st, 3);
+			if (label && label[0])
+				sqlite3_bind_text(st, 4, label, -1, SQLITE_TRANSIENT);
+			else
+				sqlite3_bind_null(st, 4);
+			sqlite3_bind_int(st, 5, (int)limit * 10);
+			sqlite3_bind_int(st, 6, (int)(have_cursor == 1 ? coffset : 0));
+			while (nrows < limit &&
+			    sqlite3_step(st) == SQLITE_ROW) {
+				const unsigned char *t =
+				    sqlite3_column_text(st, 0);
+				long long id = sqlite3_column_int64(st, 1);
+				scanned++;
+				if (!t)
+					continue;
+				if (!tr_fetch(db, (const char *)t, id,
+				    &rows[nrows]))
+					continue;
+				rows[nrows].snippet =
+				    tr_dup(sqlite3_column_text(st, 2));
+				if (!rows[nrows].snippet) {
+					tr_free_rows(rows, nrows + 1);
+					sqlite3_finalize(st);
+					sqlite3_close(db);
+					*is_error = 1;
+					gbuf_adds(text,
+					    "internal error: out of memory\n");
+					return 0;
+				}
+				/* Filters on fields outside the index
+				 * apply at fetch time. */
+				if (proj && proj[0] &&
+				    strcmp(rows[nrows].table,
+				    "checkpoints") != 0) {
+					tr_free_row(&rows[nrows]);
+					memset(&rows[nrows], 0,
+					    sizeof rows[nrows]);
+					continue;
+				}
+				if (aa && aa[0] &&
+				    strcmp(rows[nrows].author, aa) != 0) {
+					tr_free_row(&rows[nrows]);
+					memset(&rows[nrows], 0,
+					    sizeof rows[nrows]);
+					continue;
+				}
+				if ((fh && fh[0] &&
+				    strcmp(rows[nrows].host, fh) != 0) ||
+				    (fu && fu[0] &&
+				    strcmp(rows[nrows].user, fu) != 0) ||
+				    (fc && fc[0] &&
+				    strcmp(rows[nrows].cwd, fc) != 0)) {
+					tr_free_row(&rows[nrows]);
+					memset(&rows[nrows], 0,
+					    sizeof rows[nrows]);
+					continue;
+				}
+				nrows++;
+			}
+			scanned = (have_cursor == 1 ? (int)coffset : 0) + scanned;
+		} else {
+			char like[520], esc[512];
+			tr_like_esc(query, esc, sizeof esc);
+			snprintf(like, sizeof like, "%%%s%%", esc);
+			/* No FTS5 on this host: substring fallback over
+			 * base tables, newest first (unranked). */
+			int rc = sqlite3_prepare_v2(db,
+			    "SELECT 'checkpoints',id,NULL FROM checkpoints"
+			    " WHERE title LIKE ?1 ESCAPE '\\'"
+			    " OR body LIKE ?1 ESCAPE '\\'"
+			    " UNION ALL SELECT 'notes',id,NULL FROM notes"
+			    " WHERE title LIKE ?1 ESCAPE '\\'"
+			    " OR body LIKE ?1 ESCAPE '\\'"
+			    " UNION ALL SELECT 'policy_records',id,NULL"
+			    " FROM policy_records"
+			    " WHERE check_name LIKE ?1 ESCAPE '\\'"
+			    " OR evidence_json LIKE ?1 ESCAPE '\\'"
+			    " UNION ALL SELECT 'tool_runs',id,NULL"
+			    " FROM tool_runs WHERE tool LIKE ?1 ESCAPE '\\'"
+			    " OR argv LIKE ?1 ESCAPE '\\'"
+			    " UNION ALL SELECT 'session_events',id,NULL"
+			    " FROM session_events WHERE title LIKE ?1 ESCAPE '\\'"
+			    " OR body LIKE ?1 ESCAPE '\\'"
+			    " ORDER BY 1,2 LIMIT ?2",
+			    -1, &st, NULL);
+			if (rc != SQLITE_OK) {
+				free(rows);
+				sqlite3_close(db);
+				*is_error = 1;
+				gbuf_adds(text, "journal query failed\n");
+				return 0;
+			}
+			sqlite3_bind_text(st, 1, like, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_int(st, 2, (int)limit * 10);
+			while (nrows < limit &&
+			    sqlite3_step(st) == SQLITE_ROW) {
+				const unsigned char *t =
+				    sqlite3_column_text(st, 0);
+				long long id = sqlite3_column_int64(st, 1);
+				scanned++;
+				if (!t)
+					continue;
+				if (!tr_fetch(db, (const char *)t, id,
+				    &rows[nrows]))
+					continue;
+				nrows++;
+			}
+		}
+		sqlite3_finalize(st);
+		st = NULL;
+	} else {
+		/* Timeline and export share one chronological UNION.
+		 * A filter on a field a table lacks excludes that
+		 * table's rows; tool runs carry no package/label. */
+		int rc = sqlite3_prepare_v2(db,
+		    "SELECT created_at,tname,sid,session_id,package,label,"
+		    "kind,title,body,author,host,user,cwd,agent,origin"
+		    " FROM ("
+		    "SELECT created_at,'checkpoints' AS tname,id AS sid,"
+		    "session_id,package,label,'checkpoint' AS kind,title,"
+		    "body,author,hostname AS host,username AS user,cwd,"
+		    "agent,ctx_origin AS origin FROM checkpoints"
+		    " WHERE (?1 IS NULL OR session_id = ?1)"
+		    " AND (?2 IS NULL OR package = ?2)"
+		    " AND (?3 IS NULL OR label = ?3)"
+		    " AND (?4 IS NULL OR project = ?4)"
+		    " AND (?5 IS NULL OR author = ?5)"
+		    " AND (?6 IS NULL OR hostname = ?6)"
+		    " AND (?7 IS NULL OR username = ?7)"
+		    " AND (?8 IS NULL OR cwd = ?8)"
+		    " UNION ALL SELECT created_at,'notes',id,"
+		    "session_id,package,'',kind,title,"
+		    "body,author,hostname,username,cwd,"
+		    "agent,ctx_origin FROM notes"
+		    " WHERE (?1 IS NULL OR session_id = ?1)"
+		    " AND (?2 IS NULL OR package = ?2)"
+		    " AND ?3 IS NULL"
+		    " AND ?4 IS NULL"
+		    " AND (?5 IS NULL OR author = ?5)"
+		    " AND (?6 IS NULL OR hostname = ?6)"
+		    " AND (?7 IS NULL OR username = ?7)"
+		    " AND (?8 IS NULL OR cwd = ?8)"
+		    " UNION ALL SELECT created_at,'policy_records',id,"
+		    "session_id,package,'','policy',check_name,"
+		    "evidence_json,author,hostname,username,cwd,"
+		    "agent,ctx_origin FROM policy_records"
+		    " WHERE (?1 IS NULL OR session_id = ?1)"
+		    " AND (?2 IS NULL OR package = ?2)"
+		    " AND ?3 IS NULL"
+		    " AND ?4 IS NULL"
+		    " AND (?5 IS NULL OR author = ?5)"
+		    " AND (?6 IS NULL OR hostname = ?6)"
+		    " AND (?7 IS NULL OR username = ?7)"
+		    " AND (?8 IS NULL OR cwd = ?8)"
+		    " UNION ALL SELECT created_at,'tool_runs',id,"
+		    "session_id,'','','tool-run',tool,"
+		    "argv,author,hostname,username,cwd,"
+		    "agent,ctx_origin FROM tool_runs"
+		    " WHERE (?1 IS NULL OR session_id = ?1)"
+		    " AND ?2 IS NULL"
+		    " AND ?3 IS NULL"
+		    " AND ?4 IS NULL"
+		    " AND (?5 IS NULL OR author = ?5)"
+		    " AND (?6 IS NULL OR hostname = ?6)"
+		    " AND (?7 IS NULL OR username = ?7)"
+		    " AND (?8 IS NULL OR cwd = ?8)"
+		    " UNION ALL SELECT created_at,'session_events',id,"
+		    "session_id,package,label,event,title,"
+		    "body,author,hostname,username,cwd,"
+		    "agent,ctx_origin FROM session_events"
+		    " WHERE (?1 IS NULL OR session_id = ?1)"
+		    " AND (?2 IS NULL OR package = ?2)"
+		    " AND (?3 IS NULL OR label = ?3)"
+		    " AND ?4 IS NULL"
+		    " AND (?5 IS NULL OR author = ?5)"
+		    " AND (?6 IS NULL OR hostname = ?6)"
+		    " AND (?7 IS NULL OR username = ?7)"
+		    " AND (?8 IS NULL OR cwd = ?8)"
+		    ") WHERE (?9 IS NULL OR (created_at > ?9 OR ("
+		    "created_at = ?9 AND (tname > ?10 OR (tname = ?10 AND "
+		    "sid > ?11)))))"
+		    " ORDER BY created_at,tname,sid LIMIT ?12",
+		    -1, &st, NULL);
+		const char *f[8];
+		int i;
+		if (rc != SQLITE_OK) {
+			free(rows);
+			sqlite3_close(db);
+			*is_error = 1;
+			gbuf_adds(text, "journal query failed\n");
+			return 0;
+		}
+		f[0] = (session && session[0]) ? session : NULL;
+		f[1] = (pkg && pkg[0]) ? pkg : NULL;
+		f[2] = (label && label[0]) ? label : NULL;
+		f[3] = (proj && proj[0]) ? proj : NULL;
+		f[4] = (aa && aa[0]) ? aa : NULL;
+		f[5] = (fh && fh[0]) ? fh : NULL;
+		f[6] = (fu && fu[0]) ? fu : NULL;
+		f[7] = (fc && fc[0]) ? fc : NULL;
+		for (i = 0; i < 8; i++) {
+			if (f[i])
+				sqlite3_bind_text(st, i + 1, f[i], -1,
+				                  SQLITE_TRANSIENT);
+			else
+				sqlite3_bind_null(st, i + 1);
+		}
+		if (have_cursor == 2) {
+			sqlite3_bind_text(st, 9, created, -1,
+			                  SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 10, ctable, -1,
+			                  SQLITE_TRANSIENT);
+			sqlite3_bind_int64(st, 11, csid);
+		} else {
+			sqlite3_bind_null(st, 9);
+			sqlite3_bind_null(st, 10);
+			sqlite3_bind_null(st, 11);
+		}
+		sqlite3_bind_int(st, 12, (int)limit);
+		while (nrows < limit && sqlite3_step(st) == SQLITE_ROW) {
+			tr_row *r = &rows[nrows];
+			r->created = tr_dup(sqlite3_column_text(st, 0));
+			r->table = tr_dup(sqlite3_column_text(st, 1));
+			r->sid = sqlite3_column_int64(st, 2);
+			r->session = tr_dup(sqlite3_column_text(st, 3));
+			r->package = tr_dup(sqlite3_column_text(st, 4));
+			r->label = tr_dup(sqlite3_column_text(st, 5));
+			r->kind = tr_dup(sqlite3_column_text(st, 6));
+			r->title = tr_dup(sqlite3_column_text(st, 7));
+			r->body = tr_dup(sqlite3_column_text(st, 8));
+			r->author = tr_dup(sqlite3_column_text(st, 9));
+			r->host = tr_dup(sqlite3_column_text(st, 10));
+			r->user = tr_dup(sqlite3_column_text(st, 11));
+			r->cwd = tr_dup(sqlite3_column_text(st, 12));
+			r->agent = tr_dup(sqlite3_column_text(st, 13));
+			r->origin = tr_dup(sqlite3_column_text(st, 14));
+			r->rank = 0;
+			r->snippet = tr_dup((const unsigned char *)"");
+			if (!r->created || !r->table || !r->session ||
+			    !r->package || !r->label || !r->kind ||
+			    !r->title || !r->body || !r->author ||
+			    !r->host || !r->user || !r->cwd || !r->agent ||
+			    !r->origin || !r->snippet) {
+				tr_free_rows(rows, nrows + 1);
+				sqlite3_finalize(st);
+				sqlite3_close(db);
+				*is_error = 1;
+				gbuf_adds(text,
+				    "internal error: out of memory\n");
+				return 0;
+			}
+			nrows++;
+		}
+		sqlite3_finalize(st);
+		st = NULL;
+	}
+	sqlite3_close(db);
+	/* Assemble within budget: header, one environments block,
+	 * then rows until the tier would overflow. */
+	gbuf_init(&out);
+	{
+		const char *tiername = !budget || !budget[0] ? "compact" :
+		    budget;
+		long kib = tier / 1024;
+		snprintf(tmp, sizeof tmp,
+		    "total_recall %s, budget %s (%ldKiB), %d row%s:\n",
+		    mode, tiername, kib, nrows, nrows == 1 ? "" : "s");
+		gbuf_adds(&out, tmp);
+		gbuf_adds(&out, "  scope:");
+		if (session && session[0]) {
+			gbuf_adds(&out, " session ");
+			gbuf_adds(&out, session);
+		}
+		if (pkg && pkg[0]) {
+			gbuf_adds(&out, " package ");
+			gbuf_adds(&out, pkg);
+		}
+		if (label && label[0]) {
+			gbuf_adds(&out, " label ");
+			gbuf_adds(&out, label);
+		}
+		if (proj && proj[0]) {
+			gbuf_adds(&out, " project ");
+			gbuf_adds(&out, proj);
+		}
+		if (aa && aa[0]) {
+			gbuf_adds(&out, " author ");
+			gbuf_adds(&out, aa);
+		}
+		if (is_query) {
+			gbuf_adds(&out, " query ");
+			gbuf_adds(&out, query);
+		}
+		gbuf_addch(&out, '\n');
+		gbuf_adds(&out, "  searched: checkpoints, notes, policy"
+		    " records, tool runs, session events\n");
+		gbuf_adds(&out, "  not searched: tool outputs and"
+		    " conversation turns (never captured)\n");
+	}
+	if (nrows == 0) {
+		gbuf_adds(&out, "no matching records\ncursor: end\n");
+	} else {
+		int i, emitted = 0;
+		int env_of[100];
+		for (i = 0; i < nrows; i++)
+			env_of[i] = tr_env_index(eh, eu, ed, eo, &nenv,
+			                         &rows[i]);
+		tr_print_envs(&out, eh, eu, ed, eo, nenv);
+		if (is_export) {
+			gbuf_adds(&out, "{\"environments\":[");
+			for (i = 0; i < nenv; i++) {
+				char ebuf[128];
+				if (i)
+					gbuf_addch(&out, ',');
+				snprintf(ebuf, sizeof ebuf,
+				    "{\"n\":%d}", i + 1);
+				gbuf_adds(&out, ebuf);
+			}
+			gbuf_adds(&out, "]}\n");
+		}
+		for (i = 0; i < nrows; i++) {
+			gbuf row;
+			gbuf_init(&row);
+			if (is_export)
+				tr_print_json(&row, &rows[i], env_of[i]);
+			else
+				tr_print_row(&row, &rows[i], full,
+				             env_of[i]);
+			/* The first row is always emitted: a record must
+			 * never be invisible, and its cursor lets the
+			 * caller step past it with a bigger budget. */
+			if ((!row.failed && row.p &&
+			    out.len + row.len <= (size_t)tier) ||
+			    emitted == 0) {
+				gbuf_addn(&out, row.p, row.len);
+				emitted++;
+			} else {
+				gbuf_free(&row);
+				break;
+			}
+			gbuf_free(&row);
+		}
+		if (emitted < nrows || nrows == (int)limit) {
+			char cur[160];
+			if (is_query) {
+				long adv = (have_cursor == 1 ? coffset : 0L)
+				    + scanned;
+				snprintf(cur, sizeof cur, "o%ld", adv);
+			} else {
+				tr_row *last = &rows[emitted > 0 ?
+				    emitted - 1 : 0];
+				snprintf(cur, sizeof cur, "%s|%s|%lld",
+				         last->created, last->table,
+				         last->sid);
+			}
+			/* Limit reached with budget to spare is a page
+			 * boundary, not a truncation; cursors assume a
+			 * quiet journal (append-only, but new rows can
+			 * shift later pages). */
+			snprintf(tmp, sizeof tmp, "%s cursor=%s]\n",
+			    emitted < nrows ?
+			    "[truncated: budget exhausted," :
+			    "[page complete:",
+			    cur);
+			if (out.len + strlen(tmp) <= (size_t)tier + 256)
+				gbuf_adds(&out, tmp);
+			else
+				gbuf_adds(&out, "[truncated]\n");
+		} else {
+			gbuf_adds(&out, "cursor: end\n");
+		}
+		if (out.failed) {
+			tr_free_rows(rows, nrows);
+			gbuf_free(&out);
+			*is_error = 1;
+			gbuf_adds(text, "internal error: out of memory\n");
+			return 0;
+		}
+	}
+	tr_free_rows(rows, nrows);
+	gbuf_adds(text, out.p ? out.p : "");
+	gbuf_free(&out);
+	prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* tools.conf extensions                                                */
 /* ------------------------------------------------------------------ */
-/* The 22 built-in entries, in historical order. tools_list_json emits
+/* The 23 built-in entries, in historical order. tools_list_json emits
  * these (minus expose-offs) followed by registered externals, so the
  * no-conf document is byte-identical to the pre-0.8.0 static text. */
 static const struct {
@@ -4259,16 +5322,17 @@ static const struct {
 	{ "build_queue", "{\"name\":\"build_queue\",\"description\":\"Queued and active builds.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"limit\":{\"type\":\"number\"}}}}" },
 	{ "package_identity", "{\"name\":\"package_identity\",\"description\":\"Unix identity: fragment, registry, reservations, live accounts.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}" },
 	{ "package_notes_get", "{\"name\":\"package_notes_get\",\"description\":\"Read engineering notes for a package (newest first).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\",\"enum\":[\"finding\",\"decision\",\"issue\",\"success\",\"failure\",\"lesson\"]},\"limit\":{\"type\":\"number\"}},\"required\":[\"package\"]}}" },
-	{ "package_notes_add", "{\"name\":\"package_notes_add\",\"description\":\"Record an engineering finding, decision, open issue, success, failure or lesson (journal only).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\",\"enum\":[\"finding\",\"decision\",\"issue\",\"success\",\"failure\",\"lesson\"]},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"kind\",\"body\"]}}" },
+	{ "package_notes_add", "{\"name\":\"package_notes_add\",\"description\":\"Record an engineering finding, decision, open issue, success, failure or lesson (journal only).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\",\"enum\":[\"finding\",\"decision\",\"issue\",\"success\",\"failure\",\"lesson\"]},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"},\"session_id\":{\"type\":\"string\"},\"hostname\":{\"type\":\"string\"},\"username\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"agent\":{\"type\":\"string\"}},\"required\":[\"package\",\"kind\",\"body\"]}}" },
 	{ "package_policy_status", "{\"name\":\"package_policy_status\",\"description\":\"Policy checks with evidence and freshness for a package.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}" },
-	{ "package_policy_record", "{\"name\":\"package_policy_record\",\"description\":\"Attach verified evidence to a policy check (journal only).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"check\":{\"type\":\"string\",\"enum\":[\"unix-identity\",\"payload-layout\",\"revision-discipline\",\"dependency-closure\",\"signing-acceptance\"]},\"result\":{\"type\":\"string\",\"enum\":[\"PASS\",\"FAIL\"]},\"evidence\":{\"type\":\"object\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"check\",\"result\"]}}" },
+	{ "package_policy_record", "{\"name\":\"package_policy_record\",\"description\":\"Attach verified evidence to a policy check (journal only).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"check\":{\"type\":\"string\",\"enum\":[\"unix-identity\",\"payload-layout\",\"revision-discipline\",\"dependency-closure\",\"signing-acceptance\"]},\"result\":{\"type\":\"string\",\"enum\":[\"PASS\",\"FAIL\"]},\"evidence\":{\"type\":\"object\"},\"author\":{\"type\":\"string\"},\"session_id\":{\"type\":\"string\"},\"hostname\":{\"type\":\"string\"},\"username\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"agent\":{\"type\":\"string\"}},\"required\":[\"package\",\"check\",\"result\"]}}" },
 	{ "package_readiness", "{\"name\":\"package_readiness\",\"description\":\"What is verified, stale, unverified, plus open issues and recent notes.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}" },
 	{ "build_request", "{\"name\":\"build_request\",\"description\":\"Queue a build through the daemon intake (scan); the daemon executes detached. Records the reason in the journal.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"reason\"]}}" },
 	{ "package_bump", "{\"name\":\"package_bump\",\"description\":\"Revision bump with bumppkg guards; the reason is journaled. Never signs, publishes or installs.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"package\",\"reason\"]}}" },
-	{ "checkpoint_save", "{\"name\":\"checkpoint_save\",\"description\":\"Save a pre-restart session checkpoint (journal only, active by default). Resume post-restart with checkpoint_resume.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"},\"project\":{\"type\":\"string\"},\"workstream\":{\"type\":\"string\"},\"src_commit\":{\"type\":\"string\"},\"recipe_commit\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"}},\"required\":[\"label\",\"body\"]}}" },
+	{ "checkpoint_save", "{\"name\":\"checkpoint_save\",\"description\":\"Save a pre-restart session checkpoint (journal only, active by default). Resume post-restart with checkpoint_resume.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"},\"project\":{\"type\":\"string\"},\"workstream\":{\"type\":\"string\"},\"src_commit\":{\"type\":\"string\"},\"recipe_commit\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"},\"session_id\":{\"type\":\"string\"},\"hostname\":{\"type\":\"string\"},\"username\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"agent\":{\"type\":\"string\"}},\"required\":[\"label\",\"body\"]}}" },
 	{ "checkpoint_resume", "{\"name\":\"checkpoint_resume\",\"description\":\"Resume a saved checkpoint by id, by label (newest), or newest overall when neither is given. Closed checkpoints stay resumable by id; checkpoint_list is the active register.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"number\"},\"label\":{\"type\":\"string\"}}}}" },
 	{ "checkpoint_list", "{\"name\":\"checkpoint_list\",\"description\":\"List the active checkpoint register (newest first, with total count). Closed work is hidden unless status is closed/all or include_closed is set.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"closed\",\"all\"]},\"project\":{\"type\":\"string\"},\"workstream\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"},\"include_closed\":{\"type\":\"boolean\"}}}}" },
 	{ "checkpoint_close", "{\"name\":\"checkpoint_close\",\"description\":\"Retire a finished checkpoint from the active register by id. Never deletes: the row stays resumable by id.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"number\"}},\"required\":[\"id\"]}}" },
+	{ "total_recall", "{\"name\":\"total_recall\",\"description\":\"Bounded historical retrieval over the journal: ranked query, chronological timeline, or paginated export. Checkpoints restore working state cheaply; use this only when deeper evidence is required, never automatically.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"query\",\"timeline\",\"export\"]},\"query\":{\"type\":\"string\"},\"session_id\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"project\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"},\"hostname\":{\"type\":\"string\"},\"username\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\",\"enum\":[\"summary\",\"full\"]},\"budget\":{\"type\":\"string\",\"enum\":[\"compact\",\"standard\",\"extended\",\"deep\"]},\"limit\":{\"type\":\"number\"},\"cursor\":{\"type\":\"string\"}}}}" },
 };
 #define NBASE (int)(sizeof base_tools / sizeof base_tools[0])
 
@@ -4469,6 +5533,8 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
 		return t_checkpoint_list(args, text, is_error, err, sizeof err);
 	if (strcmp(name, "checkpoint_close") == 0)
 		return t_checkpoint_close(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "total_recall") == 0)
+		return t_total_recall(args, text, is_error, err, sizeof err);
 	/* Registered externals: fixed conf argv, no caller arguments. */
 	{
 		ext_conf conf2;
