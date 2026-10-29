@@ -61,6 +61,15 @@ mkdir -p "$FIX/repo" "$FIX/incoming" "$FIX/bin" "$FIX/logs/pkg-a"
 
 [ -x "$BIN" ] || fail "not executable: $BIN (run make first or set SBM_BIN)"
 command -v sqlite3 >/dev/null || fail "sqlite3 CLI required for fixtures"
+# Portable hashing: GNU sha256sum on Linux, shasum on macOS. Identical
+# "<hash>  <file>" output, so the cut below works for both.
+if command -v sha256sum >/dev/null 2>&1; then
+	SHA256SUM=sha256sum
+elif command -v shasum >/dev/null 2>&1; then
+	SHA256SUM="shasum -a 256"
+else
+	fail "sha256sum or shasum required for fixtures"
+fi
 
 # --- fixture recipe tree -------------------------------------------
 cat > "$FIX/recipes/pkg-a/recipe.sh" <<'EOF'
@@ -224,8 +233,8 @@ t "fixture binary runs" "0" "$("$BIN" --list-tools >/dev/null 2>&1; echo $?)" "0
 # repository.db must stay byte-identical throughout (nothing the MCP
 # does writes it); queue.db legitimately gains rows once the action
 # tools run, so its pre/post shape is asserted separately below.
-H1Q=$(sha256sum "$FIX/queue.db" | cut -d' ' -f1)
-H1R=$(sha256sum "$FIX/repo/repository.db" | cut -d' ' -f1)
+H1Q=$($SHA256SUM "$FIX/queue.db" | cut -d' ' -f1)
+H1R=$($SHA256SUM "$FIX/repo/repository.db" | cut -d' ' -f1)
 
 mcp() { printf '%s\n' "$@" | "$BIN" --mcp 2>/dev/null; }
 
@@ -626,9 +635,15 @@ printf 'tool gone /nonexistent/gone read 10 100 off %s --\n' "$FIX" > "$FIX/ext-
 out=$(SBM_TOOLS_CONF="$FIX/ext-gone.conf" mcp '{"jsonrpc":"2.0","id":218,"method":"tools/call","params":{"name":"gone","arguments":{}}}')
 t_contains "ext missing exe isError" "$out" '"isError":true'
 t_contains "ext missing exe message" "$out" 'unavailable'
+# A real sandbox run needs bwrap (absent on macOS and minimal
+# hosts): skip the success asserts there, keep the fail-closed one.
+if command -v "${SBM_BWRAP:-bwrap}" >/dev/null 2>&1; then
 out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":219,"method":"tools/call","params":{"name":"ext_boxed","arguments":{}}}')
 t_contains "ext sandbox runs" "$out" 'ext-ok args:'
 t_contains "ext sandbox exit 0" "$out" '[exit=0'
+else
+	printf 'SKIP  ext sandbox runs (no bwrap on PATH)\n'
+fi
 out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" SBM_BWRAP="/nonexistent-bwrap" mcp '{"jsonrpc":"2.0","id":220,"method":"tools/call","params":{"name":"ext_boxed","arguments":{}}}')
 t_contains "ext sandbox missing fails closed" "$out" '"isError":true'
 # sandbox profile: the recipe-tree bind is conditional on existence
@@ -733,7 +748,7 @@ EOF
 # repository.db is never written by any tool: byte-identical. queue.db
 # legitimately gains rows through the daemon intake (asserted exactly
 # above); the journal lives in its own database by design.
-H2R=$(sha256sum "$FIX/repo/repository.db" | cut -d' ' -f1)
+H2R=$($SHA256SUM "$FIX/repo/repository.db" | cut -d' ' -f1)
 t "repository DB byte-identical" "$H2R" "$H1R" "$H1R"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
