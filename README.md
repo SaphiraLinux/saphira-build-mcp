@@ -50,7 +50,7 @@ Python 3 for the test suite):
 - WSL2: use the Ubuntu instructions inside your distribution
 
 ```sh
-git clone <this repository> && cd saphira-build-mcp
+git clone https://github.com/SaphiraLinux/saphira-build-mcp.git && cd saphira-build-mcp
 make                # static binary where supported, else dynamic
 make test           # hermetic suite, no live paths touched
 sudo make install   # root: /usr/bin; without sudo: ~/.local/bin
