@@ -42,6 +42,15 @@ typedef struct {
 } ext_conf;
 
 const char *path_tools_conf(void);
+
+/* Portable mode (SBM_SAPHIRA): 1 is builder mode (unset or "on"),
+ * 0 is portable mode ("off": Saphira-state tools gated away, journal
+ * and checkpoints stay on), -1 is an invalid value. main() refuses
+ * -1 before serving anything, so the library paths below only ever
+ * see 1 or 0; where -1 could theoretically arrive it fails closed
+ * toward gated (never silently back to on). */
+int saphira_mode(void);
+
 void conf_load(ext_conf *c);
 void conf_free(ext_conf *c);
 const ext_tool *conf_find(const ext_conf *c, const char *name);

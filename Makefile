@@ -18,7 +18,18 @@ else
     LDFLAGS ?=
 endif
 
-PREFIX   ?= /usr/local
+# Install location follows privilege unless overridden: root installs
+# system-wide (sudo make install -> /usr/bin), an ordinary user
+# installs into their own tree (make install -> ~/.local/bin).
+# Explicit PREFIX=... (environment or command line) always wins, and
+# DESTDIR still applies on top for staged installs.
+ifeq ($(origin PREFIX),undefined)
+ifeq ($(shell id -u 2>/dev/null),0)
+PREFIX := /usr
+else
+PREFIX := $(or $(HOME),/tmp)/.local
+endif
+endif
 BINDIR   ?= $(PREFIX)/bin
 MANDIR   ?= $(PREFIX)/share/man
 MAN1DIR  ?= $(MANDIR)/man1

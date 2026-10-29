@@ -4342,6 +4342,31 @@ static int ext_is_off(const ext_conf *c, const char *name) {
 	return 0;
 }
 
+/* Portable mode (SBM_SAPHIRA=off): built-ins that require Saphira
+ * builder state (/recipes tree, queue/repository/apk databases,
+ * accounts registry, retained logs, incoming). Everything else —
+ * checkpoints, the notes journal, registered externals — needs only
+ * the journal database and stays on anywhere. */
+static const char *saphira_gated[] = {
+	"package_search", "package_info", "package_dependencies",
+	"package_why_installed", "package_installed",
+	"package_build_status", "package_build_history",
+	"package_build_log", "package_artifacts",
+	"build_queue", "package_identity",
+	"package_policy_status", "package_policy_record",
+	"package_readiness", "build_request", "package_bump",
+	NULL
+};
+
+static int saphira_is_gated(const char *name) {
+	int i;
+	for (i = 0; saphira_gated[i]; i++) {
+		if (strcmp(saphira_gated[i], name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
 void tools_list_json(gbuf *out) {
 	ext_conf conf;
 	int i, first = 1;
@@ -4350,6 +4375,8 @@ void tools_list_json(gbuf *out) {
 	gbuf_adds(out, "{\"tools\":[");
 	for (i = 0; i < NBASE; i++) {
 		if (ext_is_off(&conf, base_tools[i].name))
+			continue;
+		if (saphira_mode() <= 0 && saphira_is_gated(base_tools[i].name))
 			continue;
 		if (!first)
 			gbuf_addch(out, ',');
@@ -4406,10 +4433,16 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
 	if (!name)
 		return -1;
 	/* Exposure allowlist gates even built-ins: an off tool is
-	 * unknown, not failed. */
+	 * unknown, not failed. Portable mode gates Saphira-state
+	 * tools the same way (<= 0 fails closed toward gated;
+	 * main() already refused an invalid value outright). */
 	conf_load(&conf);
 	tools_validate(&conf);
 	if (ext_is_off(&conf, name)) {
+		conf_free(&conf);
+		return -1;
+	}
+	if (saphira_mode() <= 0 && saphira_is_gated(name)) {
 		conf_free(&conf);
 		return -1;
 	}

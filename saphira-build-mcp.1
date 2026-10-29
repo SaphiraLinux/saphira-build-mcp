@@ -1,4 +1,4 @@
-.TH SAPHIRA-BUILD-MCP 1 "October 2026" "saphira-build-mcp 0.8.0" "Saphira"
+.TH SAPHIRA-BUILD-MCP 1 "October 2026" "saphira-build-mcp 0.9.0" "Saphira"
 .SH NAME
 saphira-build-mcp \- Saphira build/package queries and evidence journal
 .SH SYNOPSIS
@@ -100,6 +100,34 @@ filters, compilers, and anything that builds, signs, publishes or
 installs, plus any path naming MCP-owned writable state. The
 runner is an additional capability, never a second route around
 build and package operations.
+.SH PORTABLE MODE
+.B SBM_SAPHIRA=off
+gates every tool that needs Saphira builder state (/recipes tree,
+queue/repository/apk databases, accounts registry, retained logs,
+incoming): all package_* readers, package_identity, the policy
+tools, package_readiness, build_queue, build_request and
+package_bump vanish from tools/list and refuse calls as unknown.
+Checkpoints, the notes journal and configured externals keep
+working anywhere against the journal database alone, so session
+handoff, recovery and lessons-learned travel with the binary.
+Unset or
+.B on
+keeps full builder behaviour; any other value is an explicit
+configuration failure (exit status 2, nothing served). The
+expose allowlist keeps working inside both modes and still cannot
+switch off checkpoint_*.
+.PP
+Portable hosts set
+.B SBM_NOTES_DB
+to a per-host, per-user journal path (recommended:
+~/.local/share/saphira-build-mcp/notes.db, alongside
+SBM_SAPHIRA=off in the launcher configuration). The builder
+default (/var/lib/saphira-build/notes.db) is unchanged. No
+mode-dependent path is ever invented: what is not explicitly
+configured keeps the documented default. Journal tables are
+created on first use, so a fresh path self-initialises; existing
+journals stay readable across upgrades and across process
+restarts, and historical rows are never migrated or deleted.
 .SH ENVIRONMENT
 Data-source paths default to the live system and can be pointed at
 fixtures for testing:
@@ -110,6 +138,11 @@ fixtures for testing:
 .B SBM_AUTHOR
 sets the default journal attribution (a per-call author field
 overrides it; "unspecified" when neither is set).
+.PP
+.B SBM_SAPHIRA
+selects builder mode ("on", the default when unset) or portable
+mode ("off"); anything else fails before serving (see PORTABLE
+MODE above).
 .SH EXIT STATUS
 0 on success (server exits 0 on stdin EOF). 1 on internal errors.
 2 on usage errors.

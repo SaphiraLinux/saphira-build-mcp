@@ -32,10 +32,22 @@ static const char *usage =
     "  SBM_RECIPES SBM_QUEUE_DB SBM_REPO_DIR SBM_INCOMING SBM_TSV\n"
     "  SBM_PASSWD SBM_GROUP SBM_APKDB SBM_NOTES_DB SBM_TOOLS_CONF\n"
     "  SBM_BWRAP\n"
+    "Portable mode (SBM_SAPHIRA=off) gates every tool that needs builder\n"
+    "state; checkpoints, the notes journal and configured externals keep\n"
+    "working anywhere, with the journal at $SBM_NOTES_DB (recommended\n"
+    "for portable hosts: ~/.local/share/saphira-build-mcp/notes.db).\n"
+    "Unset or \"on\" keeps full builder behaviour; any other value is an\n"
+    "explicit configuration failure.\n"
     "Journal attribution defaults to $SBM_AUTHOR (\"unspecified\" when unset);\n"
     "the MCP clientInfo recorder is client-reported and unverified.\n";
 
 int main(int argc, char **argv) {
+	const char *sm = getenv("SBM_SAPHIRA");
+	if (sm && strcmp(sm, "on") != 0 && strcmp(sm, "off") != 0) {
+		fprintf(stderr, "saphira-build-mcp: invalid SBM_SAPHIRA='%s':"
+		        " want 'on' or 'off' (or unset)\n", sm);
+		return 2;
+	}
 	if (argc == 2 && strcmp(argv[1], "--mcp") == 0)
 		return run_stdio();
 	if (argc == 2 && strcmp(argv[1], "--list-tools") == 0) {

@@ -46,6 +46,15 @@ const char *path_tools_conf(void) {
 	return env_or("SBM_TOOLS_CONF", "/etc/saphira/mcp/tools.conf");
 }
 
+int saphira_mode(void) {
+	const char *v = getenv("SBM_SAPHIRA");
+	if (!v || strcmp(v, "on") == 0)
+		return 1;
+	if (strcmp(v, "off") == 0)
+		return 0;
+	return -1;
+}
+
 static void conf_fail(ext_conf *c, const char *why) {
 	size_t n;
 	c->ok = 0;

@@ -5,6 +5,10 @@
 # or unsafe line disables extensions; built-ins stay fully on.
 # checkpoint_* tools can never be switched off.
 #
+# Portable hosts (SBM_SAPHIRA=off, no builder state) need no change
+# here: Saphira-state built-ins are gated by the mode, while
+# registered externals stay exactly as configured.
+#
 # tool <name> <abspath> <read|test> <timeout-s> <max-bytes> <sandbox on|off> <dir> -- <fixed args...>
 # No shell anywhere: fixed argv via execve. Callers pass no arguments.
 

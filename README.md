@@ -151,6 +151,19 @@ for testing:
 `SBM_PASSWD` `SBM_GROUP` `SBM_APKDB` `SBM_NOTES_DB` `SBM_TOOLS_CONF`
 `SBM_BWRAP` (`SBM_AUTHOR` for journal attribution)
 
+## Portable mode
+
+`SBM_SAPHIRA=off` runs the same binary on machines without the
+Saphira builder: every tool that needs builder state is hidden
+from tools/list and refuses calls, while checkpoints, the notes
+journal and configured externals keep working. Set `SBM_NOTES_DB`
+to a per-host journal path (recommended:
+`~/.local/share/saphira-build-mcp/notes.db`); the builder default
+is unchanged and no mode-dependent path is invented. Unset or
+`on` keeps full behaviour; any other value fails before serving.
+`make install` follows privilege: root installs to `/usr/bin`,
+an ordinary user to `~/.local/bin` (explicit `PREFIX=` wins).
+
 ## Canonical builds
 
 Release tarballs here are source snapshots only. Canonical builds

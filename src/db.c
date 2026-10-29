@@ -1,9 +1,12 @@
 #include "db.h"
 
 #include <sqlite3.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 const char *env_or(const char *name, const char *dflt) {
 	const char *v = getenv(name);
@@ -112,11 +115,42 @@ static void ensure_checkpoints_v2(sqlite3 *db) {
 	}
 }
 
+/* The journal self-initialises on a fresh path: create the parent
+ * directory when missing so first start works. Only missing
+ * components are created (default modes under the process umask);
+ * existing directories are never touched, and the rule applies in
+ * every mode — it is about the configured path, never the mode. */
+static int ensure_parent_dir(const char *path, char *err, size_t errsz) {
+	char dir[4096];
+	size_t i, n;
+	n = strlen(path);
+	if (n == 0 || n >= sizeof dir) {
+		snprintf(err, errsz, "journal path too long");
+		return -1;
+	}
+	memcpy(dir, path, n + 1);
+	for (i = 1; i < n; i++) {
+		if (dir[i] == '/') {
+			dir[i] = 0;
+			if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+				snprintf(err, errsz, "cannot create %s: %s",
+				         dir, strerror(errno));
+				return -1;
+			}
+			dir[i] = '/';
+		}
+	}
+	return 0;
+}
+
 sqlite3 *db_open_notes(char *err, size_t errsz) {
 	sqlite3 *db = NULL;
 	const char *path = path_notes_db();
 	char *msg = NULL;
-	int rc = sqlite3_open_v2(path, &db,
+	int rc;
+	if (ensure_parent_dir(path, err, errsz) != 0)
+		return NULL;
+	rc = sqlite3_open_v2(path, &db,
 	    SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
 	if (rc != SQLITE_OK) {
 		if (db) {

@@ -632,6 +632,71 @@ t_contains "ext sandbox exit 0" "$out" '[exit=0'
 out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" SBM_BWRAP="/nonexistent-bwrap" mcp '{"jsonrpc":"2.0","id":220,"method":"tools/call","params":{"name":"ext_boxed","arguments":{}}}')
 t_contains "ext sandbox missing fails closed" "$out" '"isError":true'
 
+# --- portable mode (SBM_SAPHIRA=off) -----------------------------------
+# Same binary on machines without builder state: Saphira-state tools
+# vanish from tools/list and refuse calls as unknown; checkpoints,
+# the notes journal and configured externals keep working against a
+# fresh journal. Builder data paths point at nothing that exists to
+# prove startup never probes or initialises builder infrastructure.
+PVOID=$ROOT/void
+PJOURNAL=$ROOT/pjournal/notes.db
+export SBM_SAPHIRA=off
+export SBM_NOTES_DB="$PJOURNAL"
+export SBM_RECIPES="$PVOID/recipes" SBM_QUEUE_DB="$PVOID/queue.db"
+export SBM_REPO_DIR="$PVOID/repo" SBM_INCOMING="$PVOID/incoming"
+export SBM_TSV="$PVOID/accounts.tsv" SBM_PASSWD="$PVOID/passwd"
+export SBM_GROUP="$PVOID/group" SBM_APKDB="$PVOID/installed.db"
+export SBM_TOOLS_CONF="$PVOID/no-such.conf"
+out=$("$BIN" --list-tools)
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add; do
+	t_contains "portable list keeps $n" "$out" "\"name\":\"$n\""
+done
+for n in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_policy_status package_policy_record package_readiness build_request package_bump; do
+	t_not_contains "portable list drops $n" "$out" "\"name\":\"$n\""
+done
+out=$(mcp '{"jsonrpc":"2.0","id":301,"method":"tools/call","params":{"name":"package_info","arguments":{"name":"pkg-a"}}}')
+t_contains "portable gated call unknown" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":302,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a","reason":"x","author":"t"}}}')
+t_contains "portable build_request unknown" "$out" '"code":-32602'
+# journal round-trip across processes: every mcp() call is its own
+# process, so save here and resume/list in later processes.
+out=$(mcp '{"jsonrpc":"2.0","id":303,"method":"tools/call","params":{"name":"checkpoint_save","arguments":{"label":"portable-trip","body":"state across restarts"}}}')
+t_contains "portable checkpoint save" "$out" "recorded checkpoint 1 (label 'portable-trip')"
+out=$(mcp '{"jsonrpc":"2.0","id":304,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":1}}}')
+t_contains "portable resume other process" "$out" "state across restarts"
+out=$(mcp '{"jsonrpc":"2.0","id":305,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{}}}')
+t_contains "portable register other process" "$out" "portable-trip"
+out=$(mcp '{"jsonrpc":"2.0","id":306,"method":"tools/call","params":{"name":"package_notes_add","arguments":{"package":"pkg-a","kind":"lesson","title":"portable lesson","body":"travels with the binary","author":"t"}}}')
+t_contains "portable notes add" "$out" "recorded note"
+out=$(mcp '{"jsonrpc":"2.0","id":307,"method":"tools/call","params":{"name":"package_notes_get","arguments":{"package":"pkg-a"}}}')
+t_contains "portable notes get" "$out" "portable lesson"
+t "portable void untouched" "$(test -e "$PVOID/recipes" -o -e "$PVOID/queue.db" -o -e "$PVOID/repo" && echo touched || echo clean)" "clean" "clean"
+t "portable journal created" "$(test -f "$PJOURNAL" && echo yes || echo no)" "yes" "yes"
+# externals survive portable mode unchanged.
+printf 'tool ext_ok %s read 10 65536 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-portable.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-portable.conf" mcp '{"jsonrpc":"2.0","id":308,"method":"tools/list"}')
+t_contains "portable ext listed" "$out" '"name":"ext_ok"'
+out=$(SBM_TOOLS_CONF="$FIX/ext-portable.conf" mcp '{"jsonrpc":"2.0","id":309,"method":"tools/call","params":{"name":"ext_ok","arguments":{}}}')
+t_contains "portable ext runs" "$out" 'ext-ok args:'
+# invalid mode is an explicit configuration failure, never silent on.
+out=$(SBM_SAPHIRA=bogus "$BIN" --list-tools 2>&1; echo "rc=$?") || true
+t_contains "portable invalid message" "$out" "invalid SBM_SAPHIRA='bogus'"
+t_contains "portable invalid rc" "$out" "rc=2"
+out=$(printf '%s\n' '{"jsonrpc":"2.0","id":310,"method":"tools/list"}' | SBM_SAPHIRA=bogus "$BIN" --mcp 2>&1; echo "rc=$?") || true
+t_contains "portable invalid mcp message" "$out" "invalid SBM_SAPHIRA='bogus'"
+t_contains "portable invalid mcp rc" "$out" "rc=2"
+# explicit on keeps the full builder surface (fixture-backed here).
+out=$(SBM_SAPHIRA=on "$BIN" --list-tools)
+t_contains "mode on keeps package_info" "$out" '"name":"package_info"'
+t_contains "mode on keeps build_request" "$out" '"name":"build_request"'
+# restore builder mode for the rest of the suite.
+unset SBM_SAPHIRA
+export SBM_NOTES_DB="$FIX/notes.db"
+export SBM_RECIPES="$FIX/recipes" SBM_QUEUE_DB="$FIX/queue.db"
+export SBM_REPO_DIR="$FIX/repo" SBM_INCOMING="$FIX/incoming"
+export SBM_TSV="$FIX/accounts.tsv" SBM_PASSWD="$FIX/passwd"
+export SBM_GROUP="$FIX/group" SBM_APKDB="$FIX/installed.db"
+
 # --- framing: every stdout line is valid JSON ---------------------------
 mcp '{"jsonrpc":"2.0","id":30,"method":"tools/list"}' '{"jsonrpc":"2.0","id":31,"method":"ping"}' > "$ROOT/frames.txt"
 python3 - "$ROOT/frames.txt" <<'EOF'
