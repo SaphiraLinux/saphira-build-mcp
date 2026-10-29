@@ -631,6 +631,22 @@ t_contains "ext sandbox runs" "$out" 'ext-ok args:'
 t_contains "ext sandbox exit 0" "$out" '[exit=0'
 out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" SBM_BWRAP="/nonexistent-bwrap" mcp '{"jsonrpc":"2.0","id":220,"method":"tools/call","params":{"name":"ext_boxed","arguments":{}}}')
 t_contains "ext sandbox missing fails closed" "$out" '"isError":true'
+# sandbox profile: the recipe-tree bind is conditional on existence
+# so sandboxed externals run off-builder too. Fake bwrap records the
+# argv; the assertion follows whichever host this runs on.
+cat > "$FIX/bin/fake-bwrap.sh" <<EOF
+#!/bin/sh
+echo "FAKEBWRAP-ARGS: \$*"
+EOF
+chmod +x "$FIX/bin/fake-bwrap.sh"
+printf 'tool ext_probe %s read 10 65536 on %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-probe.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-probe.conf" SBM_BWRAP="$FIX/bin/fake-bwrap.sh" mcp '{"jsonrpc":"2.0","id":221,"method":"tools/call","params":{"name":"ext_probe","arguments":{}}}')
+t_contains "sandbox profile keeps unshare" "$out" "--unshare-net"
+if [ -d /recipes ]; then
+	t_contains "sandbox binds recipes where present" "$out" "--ro-bind /recipes /recipes"
+else
+	t_not_contains "sandbox skips recipes where absent" "$out" "/recipes"
+fi
 
 # --- portable mode (SBM_SAPHIRA=off) -----------------------------------
 # Same binary on machines without builder state: Saphira-state tools

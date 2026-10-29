@@ -92,7 +92,6 @@ int runner_exec(const ext_tool *t, const char *author,
 		"--ro-bind", "/sbin", "/sbin",
 		"--ro-bind", "/usr", "/usr",
 		"--ro-bind", "/lib", "/lib",
-		"--ro-bind", "/recipes", "/recipes",
 		"--tmpfs", "/tmp",
 	};
 	static const char *child_env[] = {
@@ -135,6 +134,15 @@ int runner_exec(const ext_tool *t, const char *author,
 		exec_argv[ea++] = (char *)bwrap_bin();
 		for (i = 0; i < sizeof sandbox_pre / sizeof sandbox_pre[0]; i++)
 			exec_argv[ea++] = (char *)sandbox_pre[i];
+		/* The recipe tree exists only on builder hosts: bind it
+		 * when present so sandboxed externals run anywhere.
+		 * Existence-based, not mode-based: identical behaviour
+		 * wherever /recipes exists. */
+		if (stat("/recipes", &st) == 0 && S_ISDIR(st.st_mode)) {
+			exec_argv[ea++] = "--ro-bind";
+			exec_argv[ea++] = "/recipes";
+			exec_argv[ea++] = "/recipes";
+		}
 		if (strcmp(t->dir, "/") != 0 &&
 		    strcmp(t->dir, "/recipes") != 0) {
 			exec_argv[ea++] = "--ro-bind";
