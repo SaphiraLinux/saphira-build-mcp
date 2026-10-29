@@ -290,14 +290,27 @@ static int ensure_parent_dir(const char *path, char *err, size_t errsz) {
 	}
 	memcpy(dir, path, n + 1);
 	for (i = 1; i < n; i++) {
-		if (dir[i] == '/') {
+#ifdef _WIN32
+		if (dir[i] != '/' && dir[i] != '\\')
+			continue;
+		/* A drive prefix ("C:") is not a creatable directory. */
+		if (i == 2 && dir[1] == ':' &&
+		    ((dir[0] >= 'A' && dir[0] <= 'Z') ||
+		     (dir[0] >= 'a' && dir[0] <= 'z')))
+			continue;
+#else
+		if (dir[i] != '/')
+			continue;
+#endif
+		{
+			char sep = dir[i];
 			dir[i] = 0;
 			if (SBM_MKDIR(dir, 0755) != 0 && errno != EEXIST) {
 				snprintf(err, errsz, "cannot create %s: %s",
 				         dir, strerror(errno));
 				return -1;
 			}
-			dir[i] = '/';
+			dir[i] = sep;
 		}
 	}
 	return 0;
