@@ -349,7 +349,28 @@ above; the journal path defaults to the builder location and
 ./saphira-build-mcp --mcp         # stdio server (NDJSON primary,
                                   # Content-Length fallback)
 ./saphira-build-mcp --list-tools  # tools/list document
+./saphira-build-mcp --help        # human-readable help, stdout, exit 0
+./saphira-build-mcp -h            # same as --help
+./saphira-build-mcp --version     # version line, stdout, exit 0
 ```
+
+`--help` (and `-h`) prints the product name, version, usage,
+supported options, purpose and attribution, and exits 0 without
+starting the server, opening any database, or emitting protocol
+output — it works with no configuration at all. Unknown flags
+print usage to stderr and exit 2. Help and branding appear only
+on explicit request: MCP protocol output never carries them.
+
+Product identity, as printed by `--help`:
+
+Saphira Linux — https://saphira.vm2.uk. Created by AKADATA
+LIMITED for free; the repository LICENSE (Business Source
+License 1.1) applies for commercial use — see
+https://www.akadata.co.uk. Upcoming: Saphira-MemoryD and the
+SHAMPOO product lines (Shared Human-Agent-Model Platform for
+Orchestration & Operations) — https://shampoo.op2.uk. Free
+distribution does not by itself grant unrestricted commercial
+rights; the licence terms govern.
 
 Twenty-two built-ins in builder mode (sixteen read-only plus six
 narrowly-scoped actions), six in portable mode (checkpoints and
