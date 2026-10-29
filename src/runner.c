@@ -88,10 +88,6 @@ int runner_exec(const ext_tool *t, const char *author,
 	static const char *sandbox_pre[] = {
 		"--unshare-pid", "--unshare-uts", "--unshare-ipc",
 		"--unshare-net", "--die-with-parent",
-		"--ro-bind", "/bin", "/bin",
-		"--ro-bind", "/sbin", "/sbin",
-		"--ro-bind", "/usr", "/usr",
-		"--ro-bind", "/lib", "/lib",
 		"--tmpfs", "/tmp",
 	};
 	static const char *child_env[] = {
@@ -145,19 +141,20 @@ int runner_exec(const ext_tool *t, const char *author,
 		}
 		/* Usr-merge portability: bind the FHS trees that are real
 		 * directories; re-create host symlinks (absolutized) for
-		 * the rest. All four trees live at /, so a relative link
-		 * target resolves against /. On Saphira every tree here
-		 * is a real directory and the emitted argv is unchanged;
-		 * on merged systems (Arch: all four are symlinks) the
-		 * compat links make the loader and PATH resolve. A tree
-		 * that is neither dir nor readable link is skipped. */
+		 * the rest. All five trees live at /, so a relative link
+		 * target resolves against /. On Saphira /bin /sbin /usr
+		 * /lib are real directories (and /lib64 absent), so the
+		 * emitted argv is unchanged there; on merged systems
+		 * (Arch: four symlinks over /usr) the compat links make
+		 * the loader and PATH resolve. A tree that is neither
+		 * dir nor readable link is skipped. */
 		{
 			static const char *tree[] = {
-				"/bin", "/sbin", "/lib", "/lib64"
+				"/bin", "/sbin", "/usr", "/lib", "/lib64"
 			};
-			static char linktgt[4][4096];
+			static char linktgt[5][4096];
 			size_t ti;
-			for (ti = 0; ti < 4; ti++) {
+			for (ti = 0; ti < 5; ti++) {
 				struct stat lst;
 				if (lstat(tree[ti], &lst) != 0)
 					continue;
