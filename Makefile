@@ -39,7 +39,31 @@ SRC := src/main.c src/mcp.c src/json.c src/gbuf.c src/db.c src/conf.c src/runner
 OBJ := $(SRC:.c=.o)
 BIN := saphira-build-mcp
 
+# Windows cross builds (MinGW-w64 on a Linux host; developed and
+# Wine-tested on Arch). _WIN32 is predefined by the compiler, so no
+# -D flag is needed for the compat paths. SQLITE_SRC points at the
+# vendored SQLite amalgamation for the builtin target; SQLITE3_INC
+# and SQLITE3_LIB point at the matching import library and headers
+# for the dynamic target (standard MinGW sysroot layout by default,
+# override both together).
+MINGW_CC    ?= x86_64-w64-mingw32-gcc
+MINGW_STRIP ?= x86_64-w64-mingw32-strip
+WIN_CFLAGS  ?= -std=gnu11 -Os -Wall -Wextra
+SQLITE3_INC ?= /usr/x86_64-w64-mingw32/include
+SQLITE3_LIB ?= /usr/x86_64-w64-mingw32/lib
+SQLITE_SRC  ?=
+WIN_SQLITE_FLAGS ?= -DSQLITE_ENABLE_FTS5 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=1
+
 all: $(BIN)
+
+windows: $(SRC)
+	$(MINGW_CC) $(WIN_CFLAGS) -I$(SQLITE3_INC) $(SRC) -o saphira-build-mcp.windows.exe -L$(SQLITE3_LIB) -lsqlite3
+	$(MINGW_STRIP) saphira-build-mcp.windows.exe
+
+windows-builtin: $(SRC)
+	@if [ -z "$(SQLITE_SRC)" ]; then echo "windows-builtin needs SQLITE_SRC=<sqlite3.c path>" >&2; exit 1; fi
+	$(MINGW_CC) $(WIN_CFLAGS) $(WIN_SQLITE_FLAGS) $(SRC) $(SQLITE_SRC) -o saphira-build-mcp.windows-builtin.exe
+	$(MINGW_STRIP) saphira-build-mcp.windows-builtin.exe
 
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) $(OBJ) -o $@ $(LDFLAGS) $(LDLIBS)
@@ -52,7 +76,7 @@ test: all
 	sh tests/test.sh
 
 clean:
-	rm -f $(OBJ) $(BIN)
+	rm -f $(OBJ) $(BIN) saphira-build-mcp.windows.exe saphira-build-mcp.windows-builtin.exe
 
 install: all
 	install -d $(DESTDIR)$(BINDIR)
@@ -65,4 +89,4 @@ uninstall:
 	rm -f $(DESTDIR)$(MAN1DIR)/$(BIN).1
 	-rmdir $(DESTDIR)$(MAN1DIR) $(DESTDIR)$(MANDIR) 2>/dev/null || true
 
-.PHONY: all test clean install uninstall
+.PHONY: all test clean install uninstall windows windows-builtin

@@ -3,11 +3,14 @@
 #include "db.h"
 #include "runner.h"
 #include "sha256.h"
+#include "wincompat.h"
 
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#ifndef _WIN32
 #include <fcntl.h>
+#endif
 #include <limits.h>
 #include <sqlite3.h>
 #include <stdio.h>
@@ -15,9 +18,13 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
 #include <time.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 /* ------------------------------------------------------------------ */
 /* argument helpers                                                    */
@@ -139,6 +146,17 @@ static int read_file_cap(const char *path, size_t cap, gbuf *out,
  * 64K-request / 256K-result caps bound everywhere else. */
 static int run_capture(char *const argv[], gbuf *out, gbuf *errput,
                    int *truncated, char *err, size_t errsz) {
+#ifdef _WIN32
+	/* No fork/exec here: every caller already treats -1 as
+	 * "unavailable, fall back or report" (apk fallbacks, empty
+	 * commit pins, surfaced guard refusals). */
+	(void)argv;
+	(void)out;
+	(void)errput;
+	*truncated = 0;
+	snprintf(err, errsz, "subprocess execution is not supported on Windows");
+	return -1;
+#else
 	int po[2], pe[2], st;
 	pid_t pid;
 	*truncated = 0;
@@ -221,10 +239,8 @@ static int run_capture(char *const argv[], gbuf *out, gbuf *errput,
 	if (!WIFEXITED(st))
 		return -1;
 	return WEXITSTATUS(st);
+#endif
 }
-
-/* ------------------------------------------------------------------ */
-/* recipe scan: parsed fields, never sourced                           */
 /* ------------------------------------------------------------------ */
 #define RECIPE_FILE_CAP (128u * 1024u)
 #define RECIPE_MAX_PKGS 8192u

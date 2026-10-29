@@ -1,15 +1,33 @@
 #include "mcp.h"
 #include "json.h"
 #include "tools.h"
+#include "wincompat.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
-#include <unistd.h>
 #include <ctype.h>
 #include <errno.h>
 #include <stdint.h>
+
+/* ASCII case-insensitive compare for protocol keywords (header
+ * names are ASCII by construction). Replaces strncasecmp so no
+ * <strings.h> dependency exists anywhere in the tree. */
+static int ascii_ncasecmp(const char *a, const char *b, size_t n) {
+	for (; n; n--, a++, b++) {
+		unsigned char ca = (unsigned char)*a;
+		unsigned char cb = (unsigned char)*b;
+		if (ca >= 'A' && ca <= 'Z')
+			ca += (unsigned char)('a' - 'A');
+		if (cb >= 'A' && cb <= 'Z')
+			cb += (unsigned char)('a' - 'A');
+		if (ca != cb)
+			return (int)ca - (int)cb;
+		if (!ca)
+			break;
+	}
+	return 0;
+}
 
 /* ------------------------------------------------------------------ */
 /* JSON-RPC helpers                                                    */
@@ -202,7 +220,7 @@ static int find_content_length(const char *h, size_t hl, size_t *outlen) {
 	size_t i, p, start, v;
 	*outlen = 0;
 	for (i = 0; i + 15 < hl; i++) {
-		if (strncasecmp(h + i, "content-length:", 15) != 0)
+		if (ascii_ncasecmp(h + i, "content-length:", 15) != 0)
 			continue;
 		p = i + 15;
 		while (p < hl && (h[p] == ' ' || h[p] == '\t'))
@@ -241,12 +259,18 @@ static int read_one_message(gbuf *in, gbuf *body, int *ndjson) {
 	*ndjson = (i < in->len && in->p[i] == '{');
 
 	if (*ndjson) {
+		size_t end;
 		nl = i;
 		while (nl < in->len && in->p[nl] != '\n')
 			nl++;
 		if (nl >= in->len)
 			return 0; /* partial line: wait for the newline */
-		gbuf_addn(body, in->p + i, nl - i);
+		/* Tolerate CRLF senders (Windows consoles/pipes): a
+		 * single trailing carriage return is framing, not
+		 * content. Our own output never emits it. nl still
+		 * marks the newline for the buffer surgery below. */
+		end = (nl > i && in->p[nl - 1] == '\r') ? nl - 1 : nl;
+		gbuf_addn(body, in->p + i, end - i);
 		memmove(in->p, in->p + nl + 1, in->len - (nl + 1));
 		in->len -= (nl + 1);
 		in->p[in->len] = 0;
@@ -258,7 +282,7 @@ static int read_one_message(gbuf *in, gbuf *body, int *ndjson) {
 	 * still produce a JSON-RPC error (never silent). Raw length is
 	 * preserved so oversize whitespace trips the 64 KiB limit. */
 	if (i + 15 <= in->len &&
-	    strncasecmp(in->p + i, "content-length:", 15) == 0) {
+	    ascii_ncasecmp(in->p + i, "content-length:", 15) == 0) {
 		found = 0;
 		hl = 0;
 		for (hs = 0; hs + 1 < in->len; hs++) {
@@ -315,7 +339,7 @@ static int read_one_message(gbuf *in, gbuf *body, int *ndjson) {
 static int write_all(int fd, const char *p, size_t len) {
 	size_t off = 0;
 	while (off < len) {
-		ssize_t n = write(fd, p + off, len - off);
+		ssize_t n = SBM_WRITE(fd, p + off, len - off);
 		if (n > 0)
 			off += (size_t)n;
 		else if (n < 0 && errno == EINTR)
@@ -329,9 +353,16 @@ static int write_all(int fd, const char *p, size_t len) {
 int run_stdio(void) {
 	gbuf in;
 	char t[8192];
+#ifdef _WIN32
+	/* The MCP protocol is byte-exact NDJSON: without binary mode
+	 * the CRT translates \n to \r\n on stdout and back on stdin,
+	 * corrupting framing. stderr stays text (diagnostics only). */
+	_setmode(_fileno(stdin), _O_BINARY);
+	_setmode(_fileno(stdout), _O_BINARY);
+#endif
 	gbuf_init(&in);
 	for (;;) {
-		ssize_t n = read(0, t, sizeof t);
+		ssize_t n = SBM_READ(0, t, sizeof t);
 		if (n <= 0)
 			break;
 		gbuf_addn(&in, t, (size_t)n);

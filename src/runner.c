@@ -1,18 +1,25 @@
 #include "runner.h"
 #include "db.h"
+#include "wincompat.h"
 
 #include <errno.h>
+#ifndef _WIN32
 #include <fcntl.h>
 #include <signal.h>
+#endif
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
 #include <time.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 static void utc_now(char *out, size_t n) {
 	time_t t = time(NULL);
@@ -78,14 +85,18 @@ static void audit(const ext_tool *t, const char *author,
 	sqlite3_close(db);
 }
 
+#ifndef _WIN32
 static const char *bwrap_bin(void) {
 	return env_or("SBM_BWRAP", "bwrap");
 }
+#endif
 
 int runner_exec(const ext_tool *t, const char *author,
                 const char *recorder, gbuf *out, int *is_error) {
 	int pipefd[2] = { -1, -1 };
+#ifndef _WIN32
 	pid_t pid;
+#endif
 	struct timespec t0, now;
 	struct stat st;
 	gbuf argv_text;
@@ -94,6 +105,7 @@ int runner_exec(const ext_tool *t, const char *author,
 	int status = -1, timed_out = 0, truncated = 0, reaped = 0;
 	long ms = 0;
 	char foot[128];
+#ifndef _WIN32
 	static const char *sandbox_pre[] = {
 		"--unshare-pid", "--unshare-uts", "--unshare-ipc",
 		"--unshare-net", "--die-with-parent",
@@ -106,13 +118,16 @@ int runner_exec(const ext_tool *t, const char *author,
 		"GIT_CONFIG_NOSYSTEM=1",
 		NULL
 	};
+#endif
 
 	*is_error = 0;
 	gbuf_init(&argv_text);
 	/* Registered executable must be a live regular file: the conf
-	 * was curated, the filesystem is truth. */
+	 * was curated, the filesystem is truth. (No exec-bit probe
+	 * on Windows: executability is established by attempting
+	 * the spawn, and spawns are unsupported there anyway.) */
 	if (stat(t->exe, &st) != 0 || !S_ISREG(st.st_mode) ||
-	    access(t->exe, X_OK) != 0) {
+	    SBM_ACCESS(t->exe, X_OK) != 0) {
 		gbuf_adds(out, "tool executable unavailable");
 		*is_error = 1;
 		audit(t, author, recorder, -1, 0, 0, 0, t->exe);
@@ -124,6 +139,27 @@ int runner_exec(const ext_tool *t, const char *author,
 		audit(t, author, recorder, -1, 0, 0, 0, t->exe);
 		return 0;
 	}
+#ifdef _WIN32
+	/* No fork/exec on Windows: configured externals stay listed
+	 * but every call fails closed here, audited like any other
+	 * refusal. */
+	(void)pipefd;
+	(void)t0;
+	(void)now;
+	(void)exec_argv;
+	(void)ea;
+	(void)status;
+	(void)timed_out;
+	(void)truncated;
+	(void)reaped;
+	(void)ms;
+	(void)foot;
+	gbuf_adds(out, "tool execution is not supported on Windows");
+	*is_error = 1;
+	audit(t, author, recorder, -1, 0, 0, 0, t->exe);
+	gbuf_free(&argv_text);
+	return 0;
+#else
 	if (pipe(pipefd) != 0) {
 		gbuf_adds(out, "internal error: pipe failed");
 		*is_error = 1;
@@ -330,4 +366,5 @@ int runner_exec(const ext_tool *t, const char *author,
 	}
 	gbuf_free(&argv_text);
 	return 0;
+#endif
 }

@@ -1,14 +1,16 @@
 #include "db.h"
+#include "wincompat.h"
 
 #include <sqlite3.h>
 #include <errno.h>
+#ifndef _WIN32
 #include <pwd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <unistd.h>
 
 const char *env_or(const char *name, const char *dflt) {
 	const char *v = getenv(name);
@@ -290,7 +292,7 @@ static int ensure_parent_dir(const char *path, char *err, size_t errsz) {
 	for (i = 1; i < n; i++) {
 		if (dir[i] == '/') {
 			dir[i] = 0;
-			if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+			if (SBM_MKDIR(dir, 0755) != 0 && errno != EEXIST) {
 				snprintf(err, errsz, "cannot create %s: %s",
 				         dir, strerror(errno));
 				return -1;
@@ -333,29 +335,44 @@ sqlite3 *db_open_notes(char *err, size_t errsz) {
 }
 
 void prov_server_fill(prov_t *p) {
-	char host[256], cwd[1024];
-	struct passwd *pw;
+	char cwd[1024];
+#ifndef _WIN32
+	char host[256];
+#endif
 	const char *e;
 	memset(p, 0, sizeof *p);
 	snprintf(p->origin, sizeof p->origin, "server");
 	e = getenv("SBM_HOSTNAME");
 	if (!e || !e[0]) {
+#ifdef _WIN32
+		/* COMPUTERNAME is always present on Windows and Wine;
+		 * gethostname() would need Winsock startup for zero
+		 * benefit here. Absent means unknown (nullable). */
+		e = getenv("COMPUTERNAME");
+#else
 		if (gethostname(host, sizeof host) == 0)
 			e = host;
 		else
 			e = NULL;
+#endif
 	}
 	if (e && e[0])
 		snprintf(p->host, sizeof p->host, "%s", e);
 	e = getenv("SBM_USERNAME");
 	if (!e || !e[0]) {
-		pw = getpwuid(geteuid());
+#ifdef _WIN32
+		/* USERNAME is set for every logon session and Wine
+		 * prefix; no advapi32 dependency needed. */
+		e = getenv("USERNAME");
+#else
+		struct passwd *pw = getpwuid(geteuid());
 		e = (pw && pw->pw_name) ? pw->pw_name : NULL;
+#endif
 	}
 	if (e && e[0])
 		snprintf(p->user, sizeof p->user, "%s", e);
 	e = getenv("SBM_CWD");
-	if ((!e || !e[0]) && getcwd(cwd, sizeof cwd))
+	if ((!e || !e[0]) && SBM_GETCWD(cwd, sizeof cwd))
 		e = cwd;
 	if (e && e[0])
 		snprintf(p->cwd, sizeof p->cwd, "%s", e);
