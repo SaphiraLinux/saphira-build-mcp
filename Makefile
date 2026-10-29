@@ -75,6 +75,9 @@ src/%.o: src/%.c $(wildcard src/*.h)
 test: all
 	sh tests/test.sh
 
+docs-test: all
+	sh docs/smoke.sh
+
 clean:
 	rm -f $(OBJ) $(BIN) saphira-build-mcp.windows.exe saphira-build-mcp.windows-builtin.exe
 
@@ -89,4 +92,4 @@ uninstall:
 	rm -f $(DESTDIR)$(MAN1DIR)/$(BIN).1
 	-rmdir $(DESTDIR)$(MAN1DIR) $(DESTDIR)$(MANDIR) 2>/dev/null || true
 
-.PHONY: all test clean install uninstall windows windows-builtin
+.PHONY: all test docs-test clean install uninstall windows windows-builtin

@@ -456,7 +456,32 @@ MCP-owned writable state (`queue.db`, `repository.db`,
 `notes.db`, staged incoming). Every invocation (including
 failures) is audited to the journal `tool_runs` table with tool,
 argv, agent, exit status and elapsed time. See
-`tools.conf.example` for the curated starting set.
+`tools.conf.example` for the curated starting set. The full
+mechanics — grammar, denylists, execution model, and a verified
+`codex exec review` end-to-end run — are in
+`docs/external-tools.md`.
+
+## Documentation
+
+`docs/` is the independently verifiable integration reference
+(every runnable example executed against v0.10.8; `make docs-test`
+re-executes them):
+
+- `docs/mcp-protocol.md` — JSON-RPC 2.0 over stdio, framing, methods,
+  error catalogue, capabilities.
+- `docs/tools.md` — all 23 tools: params, real call/response pairs,
+  and a curl + PowerShell form per tool.
+- `docs/jsonrpc-examples.md` — printf/pipe/Python sessions without
+  any agent platform.
+- `docs/http-and-curl.md` — why curl needs the localhost bridge, with
+  verified transcripts.
+- `docs/recovery.md` — checkpoints, notes, policy evidence,
+  total_recall, provenance, cross-agent pattern.
+- `docs/windows.md` — MinGW builds, Wine testing, OpenCode config.
+- `docs/external-tools.md` — tools.conf grammar, denylists, runner
+  model, codex delegation.
+- `docs/examples/` — stdio clients (Python, PowerShell), the
+  stdio-to-HTTP bridge; `docs/smoke.sh` is the smoke test.
 
 ## Verified platforms
 
