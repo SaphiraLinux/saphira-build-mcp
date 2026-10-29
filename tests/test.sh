@@ -229,6 +229,23 @@ EOF
 chmod +x "$FIX/bin/bumppkg"
 t "fixture binary runs" "0" "$("$BIN" --list-tools >/dev/null 2>&1; echo $?)" "0"
 
+# --- help and version ---------------------------------------------------
+# Pure text on stdout, exit 0, no database touched (journal points
+# nowhere, mode bogus); branding never leaks into protocol output.
+t "help exit 0" "0" "$("$BIN" --help >/dev/null 2>&1; echo $?)" "0"
+t "help -h exit 0" "0" "$("$BIN" -h >/dev/null 2>&1; echo $?)" "0"
+t "help -h identical" "$("$BIN" --help 2>/dev/null)" "$("$BIN" -h 2>/dev/null)" "$("$BIN" --help 2>/dev/null)"
+t "help needs no config" "0" "$(SBM_SAPHIRA=bogus SBM_NOTES_DB=/nonexistent-xyz-notes.db "$BIN" --help >/dev/null 2>&1; echo $?)" "0"
+t "version exit 0" "0" "$("$BIN" --version >/dev/null 2>&1; echo $?)" "0"
+ver=$("$BIN" --version 2>/dev/null)
+t_contains "version names product" "$ver" "saphira-build-mcp "
+t_contains "help carries version" "$("$BIN" --help 2>/dev/null)" "$ver"
+t_contains "help product site" "$("$BIN" --help 2>/dev/null)" "https://saphira.vm2.uk"
+t_contains "help commercial licence" "$("$BIN" --help 2>/dev/null)" "https://www.akadata.co.uk"
+t_contains "help shampoo" "$("$BIN" --help 2>/dev/null)" "https://shampoo.op2.uk"
+t_contains "help shampoo expands" "$("$BIN" --help 2>/dev/null)" "Shared Human-Agent-Model Platform for Orchestration"
+t "unknown flag usage exit 2" "0" "$("$BIN" --frobnicate >/dev/null 2>&1 || echo $?)" "2"
+
 # read-only proof: hash every fixture DB before any MCP traffic.
 # repository.db must stay byte-identical throughout (nothing the MCP
 # does writes it); queue.db legitimately gains rows once the action
@@ -237,6 +254,10 @@ H1Q=$($SHA256SUM "$FIX/queue.db" | cut -d' ' -f1)
 H1R=$($SHA256SUM "$FIX/repo/repository.db" | cut -d' ' -f1)
 
 mcp() { printf '%s\n' "$@" | "$BIN" --mcp 2>/dev/null; }
+
+# Branding lives only in --help: protocol output must not carry it.
+out=$(mcp '{"jsonrpc":"2.0","id":20,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
+t_not_contains "protocol has no branding" "$out" "saphira.vm2.uk"
 
 # --- protocol ---------------------------------------------------------
 out=$(mcp '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')

@@ -8,7 +8,8 @@
 #include <unistd.h>
 
 static const char *usage =
-    "saphira-build-mcp - Saphira build/package queries and evidence journal\n"
+    "saphira-build-mcp " SBM_VERSION " - Saphira build/package queries\n"
+    "and evidence journal\n"
     "\n"
     "usage:\n"
     "  saphira-build-mcp --mcp         MCP stdio server (22 built-in tools:\n"
@@ -18,6 +19,14 @@ static const char *usage =
     "                                  revision bump; plus tools.conf\n"
     "                                  externals when configured)\n"
     "  saphira-build-mcp --list-tools  print the tools/list JSON document\n"
+    "  saphira-build-mcp --help        print this help and exit\n"
+    "  saphira-build-mcp --version     print the version and exit\n"
+    "\n"
+    "Purpose: give AI agents a safe, structured window into a software\n"
+    "build and package universe, plus a durable journal and checkpoint\n"
+    "register so work survives across sessions. In portable mode\n"
+    "(SBM_SAPHIRA=off) the same binary offers checkpoints, notes and\n"
+    "externals on any host with no builder state.\n"
     "\n"
     "The server reads the Saphira builder state: recipes, the APK and\n"
     "repository databases, the build queue and retained logs. It never\n"
@@ -42,15 +51,31 @@ static const char *usage =
     "the MCP clientInfo recorder is client-reported and unverified.\n"
     "\n"
     "Saphira Linux - https://saphira.vm2.uk\n"
-    "Created by AKADATA LIMITED for FREE - LICENSE applies for\n"
-    "commercial use see https://www.akadata.co.uk for more information\n"
-    "Upcoming Saphira-MemoryD and SHAMPOO product lines:\n"
+    "\n"
+    "Created by AKADATA LIMITED for FREE.\n"
+    "LICENSE applies for commercial use. See https://www.akadata.co.uk\n"
+    "for more information.\n"
+    "\n"
+    "Upcoming product lines: Saphira-MemoryD and SHAMPOO -\n"
     "https://shampoo.op2.uk\n"
-    "SHAMPOO IS: Shared Human-Agent-Model Platform for Orchestration\n"
-    "& Operations\n";
+    "SHAMPOO stands for:\n"
+    "Shared Human-Agent-Model Platform for Orchestration & Operations\n";
 
 int main(int argc, char **argv) {
 	const char *sm = getenv("SBM_SAPHIRA");
+	/* --help / -h / --version are pure text: they never start the
+	 * server, open a database, or emit protocol output, so they
+	 * bypass configuration validation. Everything else validates
+	 * first and fails explicitly. */
+	if (argc == 2 && (strcmp(argv[1], "--help") == 0 ||
+	    strcmp(argv[1], "-h") == 0)) {
+		fputs(usage, stdout);
+		return 0;
+	}
+	if (argc == 2 && strcmp(argv[1], "--version") == 0) {
+		printf("%s %s\n", SBM_NAME, SBM_VERSION);
+		return 0;
+	}
 	if (sm && strcmp(sm, "on") != 0 && strcmp(sm, "off") != 0) {
 		fprintf(stderr, "saphira-build-mcp: invalid SBM_SAPHIRA='%s':"
 		        " want 'on' or 'off' (or unset)\n", sm);
