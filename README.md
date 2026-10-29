@@ -19,6 +19,12 @@ compiled in, zero database dependency):
 | `bin/saphira-build-mcp.osx` | `bin/saphira-build-mcp.osx-builtin` | macOS, Apple Silicon |
 | `bin/saphira-build-mcp.musl` | `bin/saphira-build-mcp.musl-builtin` | Linux, musl libc |
 | `bin/saphira-build-mcp.arch` | `bin/saphira-build-mcp.arch-builtin` | Linux, glibc |
+| `bin/saphira-build-mcp.windows.exe` (+ `bin/sqlite3.dll`) | `bin/saphira-build-mcp.windows-builtin.exe` | Windows, x86-64 |
+
+The Windows shared binary needs `sqlite3.dll` beside it at
+runtime; the builtin carries SQLite inside (both link system
+libraries dynamically — only the musl builtin is static end to
+end, verified with `objdump`/`otool`/`ldd` per platform).
 
 The `-builtin` binaries carry SQLite inside (the `.musl` one is
 fully static); the small ones link the system SQLite — the musl
@@ -448,6 +454,12 @@ argv, agent, exit status and elapsed time. See
 - **macOS Apple Silicon (arm64):** suite green (1 skip: no
   `bwrap` on macOS, fail-closed by design), plus the end-to-end
   agent recovery test below. Intel macOS is not tested.
+- **Windows x86-64 (Wine 11 smoke):** help, version, MCP
+  framing, checkpoint save/list/resume, journal persistence,
+  unicode round-trips, backslash paths, FTS5 stemming, recall
+  pagination and budgets, externals fail-closed. Native Windows
+  validation is still desirable before claiming full Windows
+  compatibility.
 
 ### macOS Apple Silicon recovery test (2026-10-29, PASS)
 
@@ -484,6 +496,33 @@ make STATIC=0       # dynamic build (Saphira, Arch, Debian ...)
 make test           # hermetic suite, no live paths touched
 sudo make install   # root: /usr/bin; user: ~/.local/bin
 ```
+
+Windows x86-64 is cross-compiled with MinGW-w64 on Linux
+(developed on Arch) — no Windows VM needed for the build:
+
+```sh
+make windows SQLITE3_INC=<dir> SQLITE3_LIB=<dir>
+make windows-builtin SQLITE_SRC=<sqlite3.c path>
+```
+
+`windows-builtin` compiles the SQLite amalgamation (versioned
+with the Saphira recipe) directly in, with `SQLITE_ENABLE_FTS5`
+so the recall index works identically. The dynamic target links
+a `sqlite3.dll` built from the same amalgamation:
+
+```sh
+x86_64-w64-mingw32-gcc -shared -DSQLITE_API='__declspec(dllexport)' \
+  -DSQLITE_ENABLE_FTS5 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=1 \
+  -o sqlite3.dll sqlite3.c -Wl,--out-implib,libsqlite3.dll.a
+```
+
+Ship `sqlite3.dll` beside the dynamic executable. Smoke-tested
+under Wine 11 (isolated prefix): help, version, MCP framing,
+checkpoint save/list/resume, journal persistence across
+processes, unicode round-trips, backslash paths, FTS5 stemming,
+recall pagination and budgets, externals fail-closed. Native
+Windows validation is still desirable before claiming full
+Windows compatibility.
 
 `make test` runs hermetic `tests/test.sh`: fixture recipe tree,
 queue/repository databases, retained logs, fake `apk`,

@@ -154,6 +154,17 @@ configured keeps the documented default. Journal tables are
 created on first use, so a fresh path self-initialises; existing
 journals stay readable across upgrades and across process
 restarts, and historical rows are never migrated or deleted.
+.SH WINDOWS
+Windows x86-64 binaries are cross-compiled with MinGW-w64
+(`make windows` for shared SQLite, `make windows-builtin` with
+`SQLITE_SRC` pointing at the amalgamation). Standard input and
+output run in binary mode so MCP framing survives; a trailing
+carriage return on NDJSON input is tolerated. Subprocess
+execution (external tools, sandboxed or not) is unavailable:
+configured externals stay listed but every call fails closed.
+Journal paths may use forward or back slashes; drive prefixes
+(`C:`) are never created. Smoke-tested under Wine; native
+Windows validation is still desirable.
 .SH ENVIRONMENT
 Data-source paths default to the live system and can be pointed at
 fixtures for testing:
