@@ -2,8 +2,8 @@
 /saphira-build-mcp
 /saphira-build-mcp.windows.exe
 /saphira-build-mcp.windows-builtin.exe
-sqlite3.dll
-libsqlite3.dll.a
+/sqlite3.dll
+/libsqlite3.dll.a
 src/*.o
 # live-test journal: Egg-local operational data, never versioned
 /test-notes.db
