@@ -11,6 +11,8 @@
  * fork/exec/wait (no Windows equivalent in this codebase — the
  * subprocess paths fail closed on Windows), symlinks, file modes. */
 
+#include <time.h>
+
 #ifdef _WIN32
 
 #include <direct.h>
@@ -34,19 +36,6 @@
 #define X_OK 0
 #endif
 
-#include <time.h>
-
-/* gmtime_r is hidden under -std=gnu11 on MinGW-w64; gmtime_s is
- * always present there. Same contract both ways (UTC breakdown of
- * t into tm); callers keep ignoring failure exactly as before. */
-static inline void sb_gmtime(const time_t *t, struct tm *tm) {
-#ifdef _WIN32
-	(void)gmtime_s(tm, t);
-#else
-	(void)gmtime_r(t, tm);
-#endif
-}
-
 #else /* POSIX */
 
 #include <unistd.h>
@@ -58,5 +47,16 @@ static inline void sb_gmtime(const time_t *t, struct tm *tm) {
 #define SBM_ACCESS(p, m) access(p, m)
 
 #endif /* _WIN32 */
+
+/* gmtime_r is hidden under -std=gnu11 on MinGW-w64; gmtime_s is
+ * always present there. Same contract both ways (UTC breakdown of
+ * t into tm); callers keep ignoring failure exactly as before. */
+static inline void sb_gmtime(const time_t *t, struct tm *tm) {
+#ifdef _WIN32
+	(void)gmtime_s(tm, t);
+#else
+	(void)gmtime_r(t, tm);
+#endif
+}
 
 #endif
