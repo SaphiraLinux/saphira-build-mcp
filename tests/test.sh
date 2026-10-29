@@ -336,6 +336,10 @@ t_contains "policy record stored" "$out" "recorded unix-identity=PASS for pkg-a 
 out=$(mcp '{"jsonrpc":"2.0","id":46,"method":"tools/call","params":{"name":"package_policy_status","arguments":{"package":"pkg-a"}}}')
 t_contains "policy status current" "$out" "unix-identity: PASS CURRENT"
 t_contains "policy status unverified" "$out" "payload-layout: UNVERIFIED (no record)"
+# the recorded digest must equal the reference tool's digest of the
+# same file: proves the in-process SHA-256 is the standard one, on
+# every host (macOS has no sha256sum; $SHA256SUM abstracts it).
+t "policy digest matches system sha256" "0" "$(sqlite3 "$FIX/notes.db" "SELECT recipe_digest FROM policy_records WHERE package='pkg-a' AND check_name='unix-identity';")" "$($SHA256SUM "$FIX/recipes/pkg-a/recipe.sh" | cut -d' ' -f1)"
 out=$(mcp '{"jsonrpc":"2.0","id":47,"method":"tools/call","params":{"name":"package_readiness","arguments":{"package":"pkg-a"}}}')
 t_contains "readiness verified" "$out" "unix-identity: PASS CURRENT"
 t_contains "readiness notes" "$out" "notes: 3 (1 open issue)"
@@ -711,10 +715,10 @@ t_contains "portable ext listed" "$out" '"name":"ext_ok"'
 out=$(SBM_TOOLS_CONF="$FIX/ext-portable.conf" mcp '{"jsonrpc":"2.0","id":309,"method":"tools/call","params":{"name":"ext_ok","arguments":{}}}')
 t_contains "portable ext runs" "$out" 'ext-ok args:'
 # invalid mode is an explicit configuration failure, never silent on.
-out=$(SBM_SAPHIRA=bogus "$BIN" --list-tools 2>&1; echo "rc=$?") || true
+out=$(SBM_SAPHIRA=bogus "$BIN" --list-tools 2>&1 || echo "rc=$?")
 t_contains "portable invalid message" "$out" "invalid SBM_SAPHIRA='bogus'"
 t_contains "portable invalid rc" "$out" "rc=2"
-out=$(printf '%s\n' '{"jsonrpc":"2.0","id":310,"method":"tools/list"}' | SBM_SAPHIRA=bogus "$BIN" --mcp 2>&1; echo "rc=$?") || true
+out=$(printf '%s\n' '{"jsonrpc":"2.0","id":310,"method":"tools/list"}' | SBM_SAPHIRA=bogus "$BIN" --mcp 2>&1 || echo "rc=$?")
 t_contains "portable invalid mcp message" "$out" "invalid SBM_SAPHIRA='bogus'"
 t_contains "portable invalid mcp rc" "$out" "rc=2"
 # explicit on keeps the full builder surface (fixture-backed here).

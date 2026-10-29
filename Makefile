@@ -35,7 +35,7 @@ MANDIR   ?= $(PREFIX)/share/man
 MAN1DIR  ?= $(MANDIR)/man1
 DESTDIR  ?=
 
-SRC := src/main.c src/mcp.c src/json.c src/gbuf.c src/db.c src/conf.c src/runner.c src/tools.c
+SRC := src/main.c src/mcp.c src/json.c src/gbuf.c src/db.c src/conf.c src/runner.c src/sha256.c src/tools.c
 OBJ := $(SRC:.c=.o)
 BIN := saphira-build-mcp
 

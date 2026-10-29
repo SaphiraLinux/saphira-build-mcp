@@ -56,13 +56,14 @@ make test           # hermetic suite, no live paths touched
 sudo make install   # root: /usr/bin; without sudo: ~/.local/bin
 ```
 
-macOS also compiles (pure POSIX C, no Linux-only APIs; Xcode
-command line tools provide compiler, make and SQLite), with two
-known limits: sandboxed external tools need `bwrap` (Linux-only —
-calls fail closed without it) and the suite prefers `shasum`
-automatically when `sha256sum` is absent. Native macOS runs are
-not yet test-verified; a Mac verification pass is planned work,
-not a claim.
+macOS compiles and the suite passes on Apple Silicon (verified
+on arm64): Xcode command line tools provide compiler, make,
+SQLite and `shasum` — no Homebrew packages are required for
+build or test. Two known limits: sandboxed external tools need
+`bwrap` (Linux-only — those calls fail closed without it while
+everything else runs) and evidence digests are computed
+in-process, so freshness checks work identically with no
+`sha256sum` anywhere.
 
 ## Important: install agent checkpoint rules
 

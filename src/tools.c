@@ -2,6 +2,7 @@
 #include "conf.h"
 #include "db.h"
 #include "runner.h"
+#include "sha256.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -2523,37 +2524,14 @@ static void indented(gbuf *b, const char *s) {
 		gbuf_addch(b, '\n');
 }
 
-/* sha256 hex of one file via the installed coreutils frontend. */
+/* sha256 hex of one file, computed in-process. The previous
+ * /bin/sha256sum frontend silently failed on hosts without
+ * coreutils (macOS has no sha256sum), pinning every freshness
+ * check to a digest that could never move. */
 static int sha256_hex_file(const char *path, char out[65]) {
-	char *av[4];
-	gbuf so, se;
-	int trunc = 0, rc, i;
-	char ebuf[128];
-	gbuf_init(&so);
-	gbuf_init(&se);
-	av[0] = "/bin/sha256sum";
-	av[1] = "--";
-	av[2] = (char *)path;
-	av[3] = NULL;
-	rc = run_capture(av, &so, &se, &trunc, ebuf, sizeof ebuf);
-	if (rc == 0 && !so.failed && so.len >= 65) {
-		for (i = 0; i < 64; i++) {
-			char c = so.p[i];
-			if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-			      (c >= 'A' && c <= 'F')))
-				break;
-		}
-		if (i == 64 && (so.p[64] == ' ' || so.p[64] == '\t')) {
-			memcpy(out, so.p, 64);
-			out[64] = 0;
-			gbuf_free(&so);
-			gbuf_free(&se);
-			return 0;
-		}
-	}
-	gbuf_free(&so);
-	gbuf_free(&se);
-	return -1;
+	if (!path)
+		return -1;
+	return sb_sha256_file(path, out);
 }
 
 /* Recipe commit via read-only git; "" when unavailable (not a checkout,
