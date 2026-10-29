@@ -24,7 +24,7 @@
 static void utc_now(char *out, size_t n) {
 	time_t t = time(NULL);
 	struct tm tm;
-	gmtime_r(&t, &tm);
+	sb_gmtime(&t, &tm);
 	strftime(out, n, "%Y-%m-%dT%H:%M:%SZ", &tm);
 }
 

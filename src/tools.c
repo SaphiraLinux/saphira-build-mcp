@@ -2581,7 +2581,7 @@ static int prov_take(jv *args, prov_t *p) {
 static void utc_now(char out[21]) {
 	time_t t = time(NULL);
 	struct tm tm;
-	gmtime_r(&t, &tm);
+	sb_gmtime(&t, &tm);
 	strftime(out, 21, "%Y-%m-%dT%H:%M:%SZ", &tm);
 }
 
