@@ -1,5 +1,7 @@
 # saphira-build-mcp
 
+[![ci](https://github.com/SaphiraLinux/saphira-build-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/SaphiraLinux/saphira-build-mcp/actions/workflows/ci.yml)
+
 A local Model Context Protocol (MCP) server with two capabilities:
 
 1. **Portable agent recovery** — checkpoints, session handoff,

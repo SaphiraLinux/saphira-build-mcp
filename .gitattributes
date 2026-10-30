@@ -1,0 +1,4 @@
+# Enforce LF everywhere (notably on Windows checkouts): CRLF would
+# break the Makefile and the POSIX test suite. The MinGW and Wine
+# paths tolerate LF-only sources by construction.
+* text=auto eol=lf

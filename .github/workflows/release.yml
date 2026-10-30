@@ -1,0 +1,162 @@
+# Release: tag push (vX.Y.Z) rebuilds every platform, runs the gates,
+# then publishes the GitHub release with the source tarball, all
+# binaries, sqlite3.dll and SHA256SUMS.
+#
+# The source tarball is `git archive` of the tag itself, so release
+# bytes always equal tag bytes. The Saphira recipe vendors these
+# bytes (vendor= URL); public builders fetch them from here.
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*.[0-9]*.[0-9]*"
+
+permissions:
+  contents: read
+
+jobs:
+  musl:
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: apk add --no-cache gcc musl-dev make sqlite-dev sqlite python3 curl unzip
+      - run: |
+          curl -sL -o sqlite.zip https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
+          unzip -o -q sqlite.zip
+      - name: build + gate
+        run: |
+          make STATIC=1
+          [ "$(./saphira-build-mcp --version)" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
+          cp saphira-build-mcp saphira-build-mcp.musl
+          SBM_BIN=$PWD/saphira-build-mcp.musl sh tests/test.sh
+          make unix-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c
+          [ "$(./saphira-build-mcp-builtin --version)" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
+          cp saphira-build-mcp-builtin saphira-build-mcp.musl-builtin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-musl
+          path: |
+            saphira-build-mcp.musl
+            saphira-build-mcp.musl-builtin
+
+  arch:
+    runs-on: ubuntu-latest
+    container: archlinux/archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: pacman -Syu --noconfirm base-devel sqlite python curl unzip
+      - run: |
+          curl -sL -o sqlite.zip https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
+          unzip -o -q sqlite.zip
+      - name: build + gate
+        run: |
+          make STATIC=1
+          [ "$(./saphira-build-mcp --version)" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
+          cp saphira-build-mcp saphira-build-mcp.arch
+          SBM_BIN=$PWD/saphira-build-mcp.arch sh tests/test.sh
+          make unix-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c
+          [ "$(./saphira-build-mcp-builtin --version)" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
+          cp saphira-build-mcp-builtin saphira-build-mcp.arch-builtin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-arch
+          path: |
+            saphira-build-mcp.arch
+            saphira-build-mcp.arch-builtin
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: brew install sqlite python3 || brew upgrade sqlite python3
+      - run: |
+          curl -sL -o sqlite.zip https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
+          unzip -o -q sqlite.zip
+      - name: build + gate
+        run: |
+          SQLP=$(brew --prefix sqlite)
+          make STATIC=0 LDLIBS="-L$SQLP/lib -lsqlite3" CFLAGS="-std=gnu11 -Os -Wall -Wextra -I$SQLP/include"
+          [ "$(./saphira-build-mcp --version)" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
+          cp saphira-build-mcp saphira-build-mcp.osx
+          SBM_BIN=$PWD/saphira-build-mcp.osx sh tests/test.sh
+          make unix-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c BUILTIN_LIBS=-lpthread
+          [ "$(./saphira-build-mcp-builtin --version)" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
+          cp saphira-build-mcp-builtin saphira-build-mcp.osx-builtin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-osx
+          path: |
+            saphira-build-mcp.osx
+            saphira-build-mcp.osx-builtin
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-sqlite3 make curl unzip
+      - run: |
+          curl -sL -o sqlite-amalgamation.zip https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
+          unzip -o -q sqlite-amalgamation.zip
+      - name: build + gate
+        run: |
+          export PATH=/mingw64/bin:$PWD:$PATH
+          make windows SQLITE3_INC=/mingw64/include SQLITE3_LIB=/mingw64/lib
+          make windows-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c
+          x86_64-w64-mingw32-gcc -shared -Os -DSQLITE_ENABLE_FTS5 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=1 \
+            sqlite-amalgamation-3530300/sqlite3.c -o sqlite3.dll \
+            -Wl,--out-implib,libsqlite3.dll.a
+          [ "$(./saphira-build-mcp.windows-builtin.exe --version | tr -d '\r')" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
+          lock=$(SBM_SAPHIRA=off SBM_BUILD=off SBM_TOOLS_CONF=/nonexistent ./saphira-build-mcp.windows-builtin.exe --list-tools | grep -o '"name":"' | wc -l | tr -d '[:space:]')
+          [ "$lock" = 10 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: |
+            saphira-build-mcp.windows.exe
+            saphira-build-mcp.windows-builtin.exe
+            sqlite3.dll
+
+  publish:
+    name: publish release
+    needs: [musl, arch, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: assemble
+        run: |
+          VER=${GITHUB_REF_NAME#v}
+          git archive --format=tar --prefix=saphira-build-mcp-$VER/ "$GITHUB_REF_NAME" | xz -9 > saphira-build-mcp-$VER.tar.xz
+          ls dist
+          (cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+      - name: create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=${GITHUB_REF_NAME#v}
+          gh release create "$GITHUB_REF_NAME" --title "saphira-build-mcp $VER" \
+            --generate-notes \
+            saphira-build-mcp-$VER.tar.xz dist/*

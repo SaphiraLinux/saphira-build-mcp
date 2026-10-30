@@ -1,0 +1,177 @@
+# CI: build + test every platform on every push to Master and every PR.
+# Release assembly lives in release.yml (tag pushes only).
+# Private repo: Linux jobs bill 1x, Windows 2x, macOS 10x.
+name: ci
+
+on:
+  push:
+    branches: [Master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-musl:
+    name: musl static (alpine)
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: apk add --no-cache gcc musl-dev make sqlite-dev sqlite python3 curl unzip
+      - name: sqlite amalgamation (pinned)
+        run: |
+          curl -sL -o sqlite.zip https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
+          unzip -o -q sqlite.zip
+      - name: build both variants
+        run: |
+          make STATIC=1 && cp saphira-build-mcp saphira-build-mcp.musl
+          make unix-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c
+          cp saphira-build-mcp-builtin saphira-build-mcp.musl-builtin
+      - name: version
+        run: |
+          ./saphira-build-mcp.musl --version
+          ./saphira-build-mcp.musl-builtin --version
+      - name: suite (shared)
+        run: SBM_BIN=$PWD/saphira-build-mcp.musl sh tests/test.sh
+      - name: matrix (builtin)
+        run: |
+          counts() { SBM_TOOLS_CONF=/nonexistent "$@" ./saphira-build-mcp.musl-builtin --list-tools | grep -o '"name":"' | wc -l | tr -d '[:space:]'; }
+          def=$(counts env); nobuild=$(counts env SBM_BUILD=off)
+          port=$(counts env SBM_SAPHIRA=off); lock=$(counts env SBM_SAPHIRA=off SBM_BUILD=off)
+          echo "matrix: $def/$nobuild/$port/$lock"
+          [ "$def" = 23 ] && [ "$nobuild" = 21 ] && [ "$port" = 12 ] && [ "$lock" = 10 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: saphira-build-mcp-musl
+          path: |
+            saphira-build-mcp.musl
+            saphira-build-mcp.musl-builtin
+          retention-days: 7
+
+  linux-arch:
+    name: glibc static (archlinux)
+    runs-on: ubuntu-latest
+    container: archlinux/archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: pacman -Syu --noconfirm base-devel sqlite python curl unzip
+      - name: sqlite amalgamation (pinned)
+        run: |
+          curl -sL -o sqlite.zip https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
+          unzip -o -q sqlite.zip
+      - name: build both variants
+        run: |
+          make STATIC=1 && cp saphira-build-mcp saphira-build-mcp.arch
+          make unix-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c
+          cp saphira-build-mcp-builtin saphira-build-mcp.arch-builtin
+      - name: version
+        run: |
+          ./saphira-build-mcp.arch --version
+          ./saphira-build-mcp.arch-builtin --version
+      - name: suite (shared)
+        run: SBM_BIN=$PWD/saphira-build-mcp.arch sh tests/test.sh
+      - name: matrix (builtin)
+        run: |
+          counts() { SBM_TOOLS_CONF=/nonexistent "$@" ./saphira-build-mcp.arch-builtin --list-tools | grep -o '"name":"' | wc -l | tr -d '[:space:]'; }
+          def=$(counts env); nobuild=$(counts env SBM_BUILD=off)
+          port=$(counts env SBM_SAPHIRA=off); lock=$(counts env SBM_SAPHIRA=off SBM_BUILD=off)
+          echo "matrix: $def/$nobuild/$port/$lock"
+          [ "$def" = 23 ] && [ "$nobuild" = 21 ] && [ "$port" = 12 ] && [ "$lock" = 10 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: saphira-build-mcp-arch
+          path: |
+            saphira-build-mcp.arch
+            saphira-build-mcp.arch-builtin
+          retention-days: 7
+
+  macos:
+    name: macOS arm64 (macos-14)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: brew install sqlite python3 || brew upgrade sqlite python3
+      - name: sqlite amalgamation (pinned)
+        run: |
+          curl -sL -o sqlite.zip https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
+          unzip -o -q sqlite.zip
+      - name: build both variants
+        run: |
+          SQLP=$(brew --prefix sqlite)
+          make STATIC=0 LDLIBS="-L$SQLP/lib -lsqlite3" CFLAGS="-std=gnu11 -Os -Wall -Wextra -I$SQLP/include"
+          cp saphira-build-mcp saphira-build-mcp.osx
+          make unix-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c BUILTIN_LIBS=-lpthread
+          cp saphira-build-mcp-builtin saphira-build-mcp.osx-builtin
+      - name: version
+        run: |
+          ./saphira-build-mcp.osx --version
+          ./saphira-build-mcp.osx-builtin --version
+      - name: suite (shared)
+        run: SBM_BIN=$PWD/saphira-build-mcp.osx sh tests/test.sh
+      - name: matrix (builtin)
+        run: |
+          counts() { SBM_TOOLS_CONF=/nonexistent "$@" ./saphira-build-mcp.osx-builtin --list-tools | grep -o '"name":"' | wc -l | tr -d '[:space:]'; }
+          def=$(counts env); nobuild=$(counts env SBM_BUILD=off)
+          port=$(counts env SBM_SAPHIRA=off); lock=$(counts env SBM_SAPHIRA=off SBM_BUILD=off)
+          echo "matrix: $def/$nobuild/$port/$lock"
+          [ "$def" = 23 ] && [ "$nobuild" = 21 ] && [ "$port" = 12 ] && [ "$lock" = 10 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: saphira-build-mcp-osx
+          path: |
+            saphira-build-mcp.osx
+            saphira-build-mcp.osx-builtin
+          retention-days: 7
+
+  windows:
+    name: Windows x64 (MinGW, native test)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-sqlite3 make curl unzip
+      - name: sqlite amalgamation (pinned, for builtin + DLL)
+        run: |
+          curl -sL -o sqlite-amalgamation.zip https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
+          unzip -o -q sqlite-amalgamation.zip
+          ls sqlite-amalgamation-3530300/sqlite3.c
+      - name: build both exes + DLL
+        run: |
+          export PATH=/mingw64/bin:$PATH
+          make windows SQLITE3_INC=/mingw64/include SQLITE3_LIB=/mingw64/lib
+          make windows-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c
+          x86_64-w64-mingw32-gcc -shared -Os -DSQLITE_ENABLE_FTS5 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=1 \
+            sqlite-amalgamation-3530300/sqlite3.c -o sqlite3.dll \
+            -Wl,--out-implib,libsqlite3.dll.a
+          ls -la saphira-build-mcp.windows.exe saphira-build-mcp.windows-builtin.exe sqlite3.dll
+      - name: capability matrices (native, no Wine)
+        run: |
+          export PATH=$PWD:$PATH
+          ./saphira-build-mcp.windows-builtin.exe --version
+          matrix() {
+            counts() { exe=$1; shift; SBM_TOOLS_CONF=/nonexistent env "$@" "$exe" --list-tools | grep -o '"name":"' | wc -l | tr -d '[:space:]'; }
+            def=$(counts "$1"); nobuild=$(counts "$1" SBM_BUILD=off)
+            port=$(counts "$1" SBM_SAPHIRA=off); lock=$(counts "$1" SBM_SAPHIRA=off SBM_BUILD=off)
+            echo "$1 matrix: $def/$nobuild/$port/$lock"
+            [ "$def" = 23 ] && [ "$nobuild" = 21 ] && [ "$port" = 12 ] && [ "$lock" = 10 ]
+          }
+          matrix ./saphira-build-mcp.windows-builtin.exe
+          cp /mingw64/bin/libsqlite3*.dll ./
+          matrix ./saphira-build-mcp.windows.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: saphira-build-mcp-windows
+          path: |
+            saphira-build-mcp.windows.exe
+            saphira-build-mcp.windows-builtin.exe
+            sqlite3.dll
+          retention-days: 7
