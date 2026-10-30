@@ -54,7 +54,8 @@ pass "malformed conf keeps built-ins only"
 
 # 3. valid conf: expose-off + one read-only git external ( require git )
 if command -v git >/dev/null 2>&1; then
-  printf 'expose build_queue off\ntool smoke_git /usr/bin/git read 10 65536 off /home/smalley/saphira-build-mcp -- --no-pager status --short --branch\n' > "$TMP/good.conf"
+  GITBIN=$(command -v git)
+  printf 'expose build_queue off\ntool smoke_git %s read 10 65536 off %s -- --no-pager status --short --branch\n' "$GITBIN" "$PWD" > "$TMP/good.conf"
   EXT=$(SBM_TOOLS_CONF="$TMP/good.conf" "$BIN" --list-tools 2>/dev/null |
     python3 -c "import json,sys; print('\n'.join(t['name'] for t in json.load(sys.stdin)['tools']))")
   printf '%s\n' "$EXT" | grep -qx smoke_git || fail "external not listed"
@@ -117,7 +118,7 @@ if command -v curl >/dev/null 2>&1; then
   sleep 1
   [ "$(curl -s localhost:8479/health | python3 -c "import json,sys; print(json.load(sys.stdin)['ok'])" 2>/dev/null)" = "True" ] || fail "bridge health"
   [ "$(curl -s localhost:8479/list | python3 -c "import json,sys; print(len(json.load(sys.stdin)['tools']))" 2>/dev/null)" = "23" ] || fail "bridge list"
-  curl -s localhost:8479/call -d '{"tool":"build_queue","arguments":{"limit":1}}' |
+  curl -s localhost:8479/call -d '{"tool":"checkpoint_list","arguments":{"limit":1}}' |
     grep -q '"ok": true' || fail "bridge call"
   curl -s localhost:8479/call -d '{"tool":"no_such_tool","arguments":{}}' |
     grep -q '"code": -32602' || fail "bridge error passthrough"
