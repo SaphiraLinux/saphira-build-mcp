@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: toolchain
-        run: apk add --no-cache gcc musl-dev make sqlite-dev sqlite python3 curl unzip
+        run: apk add --no-cache gcc musl-dev make sqlite-dev sqlite-static sqlite python3 curl unzip
       - name: sqlite amalgamation (pinned)
         run: |
           curl -sL -o sqlite.zip https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
@@ -27,14 +27,16 @@ jobs:
       - name: build both variants
         run: |
           make STATIC=1 && cp saphira-build-mcp saphira-build-mcp.musl
+          test -x saphira-build-mcp.musl
           make unix-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c
           cp saphira-build-mcp-builtin saphira-build-mcp.musl-builtin
+          test -x saphira-build-mcp.musl-builtin
       - name: version
         run: |
           ./saphira-build-mcp.musl --version
           ./saphira-build-mcp.musl-builtin --version
       - name: suite (shared)
-        run: SBM_BIN=$PWD/saphira-build-mcp.musl sh tests/test.sh
+        run: SAPHIRA_TMPDIR=/tmp/sbm-ci SBM_BIN=$PWD/saphira-build-mcp.musl sh tests/test.sh
       - name: matrix (builtin)
         run: |
           counts() { SBM_TOOLS_CONF=/nonexistent "$@" ./saphira-build-mcp.musl-builtin --list-tools | grep -o '"name":"' | wc -l | tr -d '[:space:]'; }
@@ -64,15 +66,17 @@ jobs:
           unzip -o -q sqlite.zip
       - name: build both variants
         run: |
-          make STATIC=1 && cp saphira-build-mcp saphira-build-mcp.arch
+          make STATIC=0 && cp saphira-build-mcp saphira-build-mcp.arch
+          test -x saphira-build-mcp.arch
           make unix-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c
           cp saphira-build-mcp-builtin saphira-build-mcp.arch-builtin
+          test -x saphira-build-mcp.arch-builtin
       - name: version
         run: |
           ./saphira-build-mcp.arch --version
           ./saphira-build-mcp.arch-builtin --version
       - name: suite (shared)
-        run: SBM_BIN=$PWD/saphira-build-mcp.arch sh tests/test.sh
+        run: SAPHIRA_TMPDIR=/tmp/sbm-ci SBM_BIN=$PWD/saphira-build-mcp.arch sh tests/test.sh
       - name: matrix (builtin)
         run: |
           counts() { SBM_TOOLS_CONF=/nonexistent "$@" ./saphira-build-mcp.arch-builtin --list-tools | grep -o '"name":"' | wc -l | tr -d '[:space:]'; }
@@ -104,14 +108,16 @@ jobs:
           SQLP=$(brew --prefix sqlite)
           make STATIC=0 LDLIBS="-L$SQLP/lib -lsqlite3" CFLAGS="-std=gnu11 -Os -Wall -Wextra -I$SQLP/include"
           cp saphira-build-mcp saphira-build-mcp.osx
+          test -x saphira-build-mcp.osx
           make unix-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c BUILTIN_LIBS=-lpthread
           cp saphira-build-mcp-builtin saphira-build-mcp.osx-builtin
+          test -x saphira-build-mcp.osx-builtin
       - name: version
         run: |
           ./saphira-build-mcp.osx --version
           ./saphira-build-mcp.osx-builtin --version
       - name: suite (shared)
-        run: SBM_BIN=$PWD/saphira-build-mcp.osx sh tests/test.sh
+        run: SAPHIRA_TMPDIR=${{ runner.temp }}/sbm-ci SBM_BIN=$PWD/saphira-build-mcp.osx sh tests/test.sh
       - name: matrix (builtin)
         run: |
           counts() { SBM_TOOLS_CONF=/nonexistent "$@" ./saphira-build-mcp.osx-builtin --list-tools | grep -o '"name":"' | wc -l | tr -d '[:space:]'; }
@@ -138,7 +144,7 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           update: true
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-sqlite3 make curl unzip
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-sqlite3 make curl unzip
       - name: sqlite amalgamation (pinned, for builtin + DLL)
         run: |
           curl -sL -o sqlite-amalgamation.zip https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip

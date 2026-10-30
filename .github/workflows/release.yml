@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - run: apk add --no-cache gcc musl-dev make sqlite-dev sqlite python3 curl unzip
+      - run: apk add --no-cache gcc musl-dev make sqlite-dev sqlite-static sqlite python3 curl unzip
       - run: |
           curl -sL -o sqlite.zip https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
           unzip -o -q sqlite.zip
@@ -32,10 +32,12 @@ jobs:
           make STATIC=1
           [ "$(./saphira-build-mcp --version)" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
           cp saphira-build-mcp saphira-build-mcp.musl
-          SBM_BIN=$PWD/saphira-build-mcp.musl sh tests/test.sh
+          test -x saphira-build-mcp.musl
+          SAPHIRA_TMPDIR=/tmp/sbm-ci SBM_BIN=$PWD/saphira-build-mcp.musl sh tests/test.sh
           make unix-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c
           [ "$(./saphira-build-mcp-builtin --version)" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
           cp saphira-build-mcp-builtin saphira-build-mcp.musl-builtin
+          test -x saphira-build-mcp.musl-builtin
       - uses: actions/upload-artifact@v4
         with:
           name: dist-musl
@@ -56,13 +58,15 @@ jobs:
           unzip -o -q sqlite.zip
       - name: build + gate
         run: |
-          make STATIC=1
+          make STATIC=0
           [ "$(./saphira-build-mcp --version)" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
           cp saphira-build-mcp saphira-build-mcp.arch
-          SBM_BIN=$PWD/saphira-build-mcp.arch sh tests/test.sh
+          test -x saphira-build-mcp.arch
+          SAPHIRA_TMPDIR=/tmp/sbm-ci SBM_BIN=$PWD/saphira-build-mcp.arch sh tests/test.sh
           make unix-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c
           [ "$(./saphira-build-mcp-builtin --version)" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
           cp saphira-build-mcp-builtin saphira-build-mcp.arch-builtin
+          test -x saphira-build-mcp.arch-builtin
       - uses: actions/upload-artifact@v4
         with:
           name: dist-arch
@@ -86,10 +90,12 @@ jobs:
           make STATIC=0 LDLIBS="-L$SQLP/lib -lsqlite3" CFLAGS="-std=gnu11 -Os -Wall -Wextra -I$SQLP/include"
           [ "$(./saphira-build-mcp --version)" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
           cp saphira-build-mcp saphira-build-mcp.osx
-          SBM_BIN=$PWD/saphira-build-mcp.osx sh tests/test.sh
+          test -x saphira-build-mcp.osx
+          SAPHIRA_TMPDIR=${{ runner.temp }}/sbm-ci SBM_BIN=$PWD/saphira-build-mcp.osx sh tests/test.sh
           make unix-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c BUILTIN_LIBS=-lpthread
           [ "$(./saphira-build-mcp-builtin --version)" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
           cp saphira-build-mcp-builtin saphira-build-mcp.osx-builtin
+          test -x saphira-build-mcp.osx-builtin
       - uses: actions/upload-artifact@v4
         with:
           name: dist-osx
@@ -109,7 +115,7 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           update: true
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-sqlite3 make curl unzip
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-sqlite3 make curl unzip
       - run: |
           curl -sL -o sqlite-amalgamation.zip https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
           unzip -o -q sqlite-amalgamation.zip

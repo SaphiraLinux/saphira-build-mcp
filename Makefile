@@ -70,7 +70,7 @@ windows-builtin: $(SRC)
 # Same flags as the Windows builtin; BUILTIN_LIBS override per OS
 # (macOS links pthread/dl from libSystem).
 SQLITE_FLAGS  ?= -DSQLITE_ENABLE_FTS5 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=1
-BUILTIN_LIBS  ?= -lpthread -ldl
+BUILTIN_LIBS  ?= -lpthread -ldl -lm
 unix-builtin: $(SRC)
 	@if [ -z "$(SQLITE_SRC)" ]; then echo "unix-builtin needs SQLITE_SRC=<sqlite3.c path>" >&2; exit 1; fi
 	$(CC) $(CFLAGS) $(SQLITE_FLAGS) -I$(dir $(SQLITE_SRC)) $(SRC) $(SQLITE_SRC) -o $(BIN)-builtin $(LDFLAGS) $(BUILTIN_LIBS)
