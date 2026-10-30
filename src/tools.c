@@ -4425,7 +4425,11 @@ void checkpoint_instructions(gbuf *out) {
  * query, chronological timeline, and paginated export. This is not
  * perfect memory — it retrieves only what was recorded (notes,
  * checkpoints, policy evidence, tool-run metadata; tool outputs
- * and conversation turns were never captured). Checkpoints restore
+ * and conversation turns were never captured). Each mode answers a
+ * different question: query ranks recorded TEXT by relevance and
+ * cannot address saved state by checkpoint label (use
+ * checkpoint_list/resume for that); timeline reconstructs EVENTS in
+ * order with cursors; export dumps rows. Checkpoints restore
  * working state cheaply; total_recall digs deeper only when asked,
  * never automatically. */
 #define TR_LIMIT_DFLT 20
@@ -5348,7 +5352,7 @@ static const struct {
 	{ "checkpoint_resume", "{\"name\":\"checkpoint_resume\",\"description\":\"Resume a saved checkpoint by id, by label (newest), or newest overall when neither is given. Closed checkpoints stay resumable by id; checkpoint_list is the active register.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"number\"},\"label\":{\"type\":\"string\"}}}}" },
 	{ "checkpoint_list", "{\"name\":\"checkpoint_list\",\"description\":\"List the active checkpoint register (newest first, with total count). Closed work is hidden unless status is closed/all or include_closed is set.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"closed\",\"all\"]},\"project\":{\"type\":\"string\"},\"workstream\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"},\"include_closed\":{\"type\":\"boolean\"}}}}" },
 	{ "checkpoint_close", "{\"name\":\"checkpoint_close\",\"description\":\"Retire a finished checkpoint from the active register by id. Never deletes: the row stays resumable by id.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"number\"}},\"required\":[\"id\"]}}" },
-	{ "total_recall", "{\"name\":\"total_recall\",\"description\":\"Bounded historical retrieval over the journal: ranked query, chronological timeline, or paginated export. Checkpoints restore working state cheaply; use this only when deeper evidence is required, never automatically.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"query\",\"timeline\",\"export\"]},\"query\":{\"type\":\"string\"},\"session_id\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"project\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"},\"hostname\":{\"type\":\"string\"},\"username\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\",\"enum\":[\"summary\",\"full\"]},\"budget\":{\"type\":\"string\",\"enum\":[\"compact\",\"standard\",\"extended\",\"deep\"]},\"limit\":{\"type\":\"number\"},\"cursor\":{\"type\":\"string\"}}}}" },
+	{ "total_recall", "{\"name\":\"total_recall\",\"description\":\"Bounded historical retrieval over the journal: ranked query, chronological timeline, or paginated export. Each mode answers a different question: query ranks recorded text by relevance and cannot address saved state by checkpoint label (use checkpoint_list/resume for that); timeline reconstructs events in order with cursors; export dumps rows. Checkpoints restore working state cheaply; use this only when deeper evidence is required, never automatically.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"query\",\"timeline\",\"export\"]},\"query\":{\"type\":\"string\"},\"session_id\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"project\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"},\"hostname\":{\"type\":\"string\"},\"username\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\",\"enum\":[\"summary\",\"full\"]},\"budget\":{\"type\":\"string\",\"enum\":[\"compact\",\"standard\",\"extended\",\"deep\"]},\"limit\":{\"type\":\"number\"},\"cursor\":{\"type\":\"string\"}}}}" },
 };
 #define NBASE (int)(sizeof base_tools / sizeof base_tools[0])
 
