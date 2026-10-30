@@ -37,6 +37,8 @@ jobs:
           ./saphira-build-mcp.musl-builtin --version
       - name: suite (shared)
         run: SAPHIRA_TMPDIR=/tmp/sbm-ci SBM_BIN=$PWD/saphira-build-mcp.musl sh tests/test.sh
+      - name: docs smoke
+        run: SAPHIRA_TMPDIR=/tmp/sbm-ci sh docs/smoke.sh
       - name: matrix (builtin)
         run: |
           counts() { SBM_TOOLS_CONF=/nonexistent "$@" ./saphira-build-mcp.musl-builtin --list-tools | grep -o '"name":"' | wc -l | tr -d '[:space:]'; }
@@ -77,6 +79,8 @@ jobs:
           ./saphira-build-mcp.arch-builtin --version
       - name: suite (shared)
         run: SAPHIRA_TMPDIR=/tmp/sbm-ci SBM_BIN=$PWD/saphira-build-mcp.arch sh tests/test.sh
+      - name: docs smoke
+        run: SAPHIRA_TMPDIR=/tmp/sbm-ci sh docs/smoke.sh
       - name: matrix (builtin)
         run: |
           counts() { SBM_TOOLS_CONF=/nonexistent "$@" ./saphira-build-mcp.arch-builtin --list-tools | grep -o '"name":"' | wc -l | tr -d '[:space:]'; }
@@ -118,6 +122,8 @@ jobs:
           ./saphira-build-mcp.osx-builtin --version
       - name: suite (shared)
         run: SAPHIRA_TMPDIR=${{ runner.temp }}/sbm-ci SBM_BIN=$PWD/saphira-build-mcp.osx sh tests/test.sh
+      - name: docs smoke
+        run: SAPHIRA_TMPDIR=${{ runner.temp }}/sbm-ci sh docs/smoke.sh
       - name: matrix (builtin)
         run: |
           counts() { SBM_TOOLS_CONF=/nonexistent "$@" ./saphira-build-mcp.osx-builtin --list-tools | grep -o '"name":"' | wc -l | tr -d '[:space:]'; }
@@ -153,8 +159,10 @@ jobs:
       - name: build both exes + DLL
         run: |
           export PATH=/mingw64/bin:$PATH
-          make windows SQLITE3_INC=/mingw64/include SQLITE3_LIB=/mingw64/lib
-          make windows-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c
+          ls /mingw64/bin/ | grep -E "strip|gcc" || true
+          pacman -Ql mingw-w64-x86_64-binutils 2>/dev/null | grep -E "bin/.*strip" || true
+          make windows SQLITE3_INC=/mingw64/include SQLITE3_LIB=/mingw64/lib MINGW_STRIP=true
+          make windows-builtin SQLITE_SRC=$PWD/sqlite-amalgamation-3530300/sqlite3.c MINGW_STRIP=true
           x86_64-w64-mingw32-gcc -shared -Os -DSQLITE_ENABLE_FTS5 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=1 \
             sqlite-amalgamation-3530300/sqlite3.c -o sqlite3.dll \
             -Wl,--out-implib,libsqlite3.dll.a
