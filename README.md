@@ -79,9 +79,24 @@ it is not allowed to perform builds:
 - `SBM_NOTES_DB` selects the local journal. Recommended for
   ordinary users: `~/.local/share/saphira-build-mcp/notes.db`.
   No mode-dependent path is ever invented.
-- Journals are local to each host. Portable mode does **not**
-  synchronise across hosts; each machine keeps its own journal.
+- Journals live in one SQLite file each. Portable mode does **not**
+  synchronise across hosts — instead, many agents on many hosts
+  share one journal over SSH with the database staying put (see
+  `docs/ssh-remote.md`).
 - Closed checkpoints retain their history and stay resumable by id.
+
+## One journal, many agents (local or over SSH)
+
+One journal. Many agents. Many operating systems. Local or remote
+over SSH. Your history stays where you choose.
+
+MCP already speaks stdin/stdout and SSH already moves byte streams,
+so no HTTP server or sync protocol is needed: the agent runs
+locally, `ssh -T -o BatchMode=yes user@server '... exec
+/usr/bin/saphira-build-mcp --mcp'` runs the server remotely, and the
+journal never leaves the remote host. Proven Egg → Homer with save,
+restart, resume, concurrent writers and `opencode mcp list` —
+see `docs/ssh-remote.md`.
 
 ## Quick start: portable Linux host
 
@@ -480,6 +495,8 @@ re-executes them):
 - `docs/recovery.md` — checkpoints, notes, policy evidence,
   total_recall, provenance, cross-agent pattern.
 - `docs/windows.md` — MinGW builds, Wine testing, OpenCode config.
+- `docs/ssh-remote.md` — one journal shared over SSH: the command,
+  OpenCode config, three verified setups, locking and security.
 - `docs/external-tools.md` — tools.conf grammar, denylists, runner
   model, codex delegation.
 - `docs/examples/` — stdio clients (Python, PowerShell), the

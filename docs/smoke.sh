@@ -135,7 +135,7 @@ done
 [ "$(grep -c 'localhost:8473/call' docs/tools.md)" -ge 23 ] || fail "tools.md curl coverage"
 [ "$(grep -c 'mcp-stdio-client.ps1' docs/tools.md)" -ge 23 ] || fail "tools.md powershell coverage"
 for f in docs/mcp-protocol.md docs/tools.md docs/jsonrpc-examples.md docs/http-and-curl.md \
-  docs/recovery.md docs/windows.md docs/external-tools.md \
+  docs/recovery.md docs/windows.md docs/external-tools.md docs/ssh-remote.md \
   docs/examples/mcp-stdio-client.py docs/examples/mcp-stdio-client.ps1 \
   docs/examples/stdio-http-bridge.py; do
   [ -f "$f" ] || fail "missing $f"
