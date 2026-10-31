@@ -480,6 +480,7 @@ struct obrow {
 	char state[32];
 	char detail[512];
 	char finished[32];
+	int recent;
 };
 
 static int published_nvr_here(sqlite3 *qdb, const char *pkg,
@@ -504,8 +505,9 @@ int bridge_render(sqlite3 *jdb, const char *pkg, long limit, gbuf *text) {
 	sqlite3 *qdb = NULL;
 	sqlite3_stmt *st = NULL;
 	char dberr[256];
-	struct obrow failed[256], waiting[256], awaiting[64];
-	int nf = 0, nw = 0, na = 0;
+	struct obrow failed[256], waiting[256], awaiting[64], stale[256];
+	int nf = 0, nw = 0, na = 0, ns = 0;
+	int nfr = 0, nwr = 0, nar = 0;
 	int i, qok = 0;
 	long shown = 0;
 	char tmp[1024];
@@ -542,7 +544,40 @@ int bridge_render(sqlite3 *jdb, const char *pkg, long limit, gbuf *text) {
 				continue;
 			if (strcmp(state, "FAIL") == 0 ||
 			    strcmp(state, "INTERRUPTED") == 0) {
-				if (nf < 256) {
+				/* STALE: the recipe moved past this attempt.
+				 * Visible for history, excluded from the
+				 * needs-attention failed bucket. */
+				char req[160] = "";
+				int is_stale = 0;
+				if (strcmp(state, "FAIL") == 0) {
+					recipe_requested(r.package, req,
+					                 sizeof req);
+					if (req[0] && nvr[0] &&
+					    strcmp(req, nvr) != 0)
+						is_stale = 1;
+				}
+				if (is_stale) {
+					if (ns < 256) {
+						snprintf(stale[ns].package,
+						         sizeof stale[ns].package,
+						         "%s", r.package);
+						snprintf(stale[ns].nvr,
+						         sizeof stale[ns].nvr,
+						         "%s", nvr);
+						snprintf(stale[ns].state,
+						         sizeof stale[ns].state,
+						         "STALE");
+						snprintf(stale[ns].finished,
+						         sizeof stale[ns].finished,
+						         "%s", r.finished_at);
+						snprintf(stale[ns].detail,
+						         sizeof stale[ns].detail,
+						         "recipe now %s", req);
+						stale[ns].recent = bridge_recent(
+						    r.finished_at);
+						ns++;
+					}
+				} else if (nf < 256) {
 					snprintf(failed[nf].package,
 					         sizeof failed[nf].package, "%s",
 					         r.package);
@@ -554,6 +589,10 @@ int bridge_render(sqlite3 *jdb, const char *pkg, long limit, gbuf *text) {
 					snprintf(failed[nf].finished,
 					         sizeof failed[nf].finished, "%s",
 					         r.finished_at);
+					if (bridge_recent(r.finished_at)) {
+						failed[nf].recent = 1;
+						nfr++;
+					}
 					nf++;
 				}
 			} else if (strcmp(state, "BLOCKED") == 0 ||
@@ -584,6 +623,12 @@ int bridge_render(sqlite3 *jdb, const char *pkg, long limit, gbuf *text) {
 						         "%s", r.started_at[0]
 						                  ? r.started_at
 						                  : r.queued_at);
+						if (bridge_recent(r.started_at[0]
+						                  ? r.started_at
+						                  : r.queued_at)) {
+							waiting[nw].recent = 1;
+							nwr++;
+						}
 						nw++;
 					}
 				}
@@ -598,16 +643,27 @@ int bridge_render(sqlite3 *jdb, const char *pkg, long limit, gbuf *text) {
 					snprintf(awaiting[na].state,
 					         sizeof awaiting[na].state, "%s",
 					         "AWAITING SIGNING");
-					snprintf(awaiting[na].finished,
-					         sizeof awaiting[na].finished,
-					         "%s", r.finished_at);
-					na++;
+						snprintf(awaiting[na].finished,
+						         sizeof awaiting[na].finished,
+						         "%s", r.finished_at);
+						if (bridge_recent(r.finished_at)) {
+							awaiting[na].recent = 1;
+							nar++;
+						}
+						na++;
 				}
 			}
 		}
 	}
 	sqlite3_finalize(st);
-	gbuf_adds(text, "outstanding builder work:\nfailed (ran and failed, no later success):\n");
+	snprintf(tmp, sizeof tmp,
+	         "outstanding builder work (needs attention first;"
+	         " stale recipe attempts listed for reference):\n");
+	gbuf_adds(text, tmp);
+	snprintf(tmp, sizeof tmp,
+	         "failed (ran and failed, no later success;"
+	         " %d recent of %d):\n", nfr, nf);
+	gbuf_adds(text, tmp);
 	if (!nf)
 		gbuf_adds(text, "  (none)\n");
 	for (i = 0; i < nf && i < limit; i++) {
@@ -616,7 +672,10 @@ int bridge_render(sqlite3 *jdb, const char *pkg, long limit, gbuf *text) {
 		         failed[i].finished);
 		gbuf_adds(text, tmp);
 	}
-	gbuf_adds(text, "waiting (blocked/interrupted/stalled):\n");
+	snprintf(tmp, sizeof tmp,
+	         "waiting (blocked/interrupted/stalled;"
+	         " %d recent of %d):\n", nwr, nw);
+	gbuf_adds(text, tmp);
 	if (!nw)
 		gbuf_adds(text, "  (none)\n");
 	for (i = 0; i < nw && i < limit; i++) {
@@ -625,7 +684,10 @@ int bridge_render(sqlite3 *jdb, const char *pkg, long limit, gbuf *text) {
 		         waiting[i].state, waiting[i].finished);
 		gbuf_adds(text, tmp);
 	}
-	gbuf_adds(text, "stale awaiting signing (PASS over 24h, unpublished):\n");
+	snprintf(tmp, sizeof tmp,
+	         "stale awaiting signing (PASS over 24h, unpublished;"
+	         " %d recent of %d):\n", nar, na);
+	gbuf_adds(text, tmp);
 	if (!na)
 		gbuf_adds(text, "  (none)\n");
 	for (i = 0; i < na && i < limit; i++) {
@@ -634,6 +696,20 @@ int bridge_render(sqlite3 *jdb, const char *pkg, long limit, gbuf *text) {
 		         awaiting[i].state, awaiting[i].finished);
 		gbuf_adds(text, tmp);
 	}
+	snprintf(tmp, sizeof tmp,
+	         "stale (recipe moved on; for reference, not outstanding;"
+	         " %d shown):\n", ns);
+	gbuf_adds(text, tmp);
+	if (!ns)
+		gbuf_adds(text, "  (none)\n");
+	for (i = 0; i < ns && i < limit; i++) {
+		snprintf(tmp, sizeof tmp, "  %s %s %s since %s (%s)\n",
+		         stale[i].package, stale[i].nvr,
+		         stale[i].state, stale[i].finished,
+		         stale[i].detail);
+		gbuf_adds(text, tmp);
+	}
+	gbuf_adds(text, "full attempt history: package_build_history; full journal: total_recall\n");
 	/* Linked user tasks: checkpoints name their package explicitly;
 	 * anything else would be an invented association, so unlinked
 	 * bridge rows list without a task owner. */
@@ -700,8 +776,8 @@ void bridge_instruction_line(gbuf *out) {
 	sqlite3 *qdb = NULL;
 	sqlite3_stmt *st = NULL;
 	char dberr[256];
-	long nf = 0, nw = 0, na = 0;
-	char tmp[192];
+	long nf = 0, nfr = 0, nw = 0, na = 0;
+	char tmp[256];
 	qdb = db_open_ro(path_queue_db(), dberr, sizeof dberr);
 	if (!qdb)
 		return;
@@ -720,10 +796,13 @@ void bridge_instruction_line(gbuf *out) {
 		const unsigned char *finished = sqlite3_column_text(st, 3);
 		const unsigned char *published = sqlite3_column_text(st, 4);
 		const char *state = s ? (const char *)s : "";
+		const char *fin = finished ? (const char *)finished : "";
 		if (strcmp(state, "FAIL") == 0 ||
-		    strcmp(state, "INTERRUPTED") == 0)
+		    strcmp(state, "INTERRUPTED") == 0) {
 			nf++;
-		else if (strcmp(state, "BLOCKED") == 0)
+			if (bridge_recent(fin))
+				nfr++;
+		} else if (strcmp(state, "BLOCKED") == 0)
 			nw++;
 		else if (strcmp(state, "QUEUED") == 0 ||
 		         strcmp(state, "BUILDING") == 0) {
@@ -734,7 +813,7 @@ void bridge_instruction_line(gbuf *out) {
 				nw++;
 		} else if (strcmp(state, "PASS") == 0 &&
 		           (!published || !published[0])) {
-			if (parse_iso_age_s(finished ? (const char *)finished : "") >= AWAITING_AFTER_S)
+			if (parse_iso_age_s(fin) >= AWAITING_AFTER_S)
 				na++;
 		}
 	}
@@ -742,11 +821,13 @@ void bridge_instruction_line(gbuf *out) {
 	sqlite3_close(qdb);
 	if (!nf && !nw && !na)
 		return;
+	/* Prioritised headline: needs-attention first (recent failed),
+	 * complete counts preserved; the tool lists everything. */
 	snprintf(tmp, sizeof tmp,
-	         " Open builder obligations: %ld failed, %ld waiting,"
-	         " %ld stale awaiting signing."
+	         " Open builder obligations: %ld failed (%ld recent),"
+	         " %ld waiting, %ld stale awaiting signing."
 	         " See the obligations tool.",
-	         nf, nw, na);
+	         nf, nfr, nw, na);
 	gbuf_adds(out, tmp);
 }
 
@@ -764,4 +845,216 @@ void bridge_startup_sync(void) {
 	sqlite3_busy_timeout(jdb, 500);
 	bridge_run(jdb, 100, &imported, &scanned);
 	sqlite3_close(jdb);
+}
+
+void bridge_repo_newest(const char *pkg, char *nvr, size_t nn,
+                        char *pub, size_t pn) {
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	char path[4096], dberr[256];
+	if (nn)
+		nvr[0] = 0;
+	if (pn)
+		pub[0] = 0;
+	if (!pkg || !pkg[0])
+		return;
+	if (snprintf(path, sizeof path, "%s/repository.db", path_repo_dir()) >= (int)sizeof path)
+		return;
+	db = db_open_ro(path, dberr, sizeof dberr);
+	if (!db)
+		return;
+	if (sqlite3_prepare_v2(db,
+	    "SELECT nvr,published_at FROM packages WHERE name=?1 AND is_newest=1",
+	    -1, &st, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(st) == SQLITE_ROW) {
+			const unsigned char *n = sqlite3_column_text(st, 0);
+			const unsigned char *p = sqlite3_column_text(st, 1);
+			if (n)
+				snprintf(nvr, nn, "%s", (const char *)n);
+			if (p)
+				snprintf(pub, pn, "%s", (const char *)p);
+		}
+	}
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+}
+
+static int repo_has_nvr(const char *pkg, const char *nvr) {
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	char path[4096], dberr[256];
+	int hit = 0;
+	if (!pkg || !pkg[0] || !nvr || !nvr[0])
+		return 0;
+	if (snprintf(path, sizeof path, "%s/repository.db", path_repo_dir()) >= (int)sizeof path)
+		return 0;
+	db = db_open_ro(path, dberr, sizeof dberr);
+	if (!db)
+		return 0;
+	if (sqlite3_prepare_v2(db,
+	    "SELECT 1 FROM packages WHERE name=?1 AND nvr=?2",
+	    -1, &st, NULL) == SQLITE_OK) {
+		char full[320];
+		snprintf(full, sizeof full, "%s-%s", pkg, nvr);
+		sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 2, full, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(st) == SQLITE_ROW)
+			hit = 1;
+	}
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+	return hit;
+}
+
+int bridge_recent(const char *iso) {
+	long age = parse_iso_age_s(iso);
+	return age >= 0 && age <= 7L * 86400L;
+}
+
+void bridge_effective(sqlite3 *qdb, const char *pkg, const char *req,
+                      char *state, size_t sn, char *detail, size_t dn) {
+	sqlite3_stmt *st = NULL;
+	char row_state[16] = "", row_ver[64] = "", row_rev[16] = "";
+	char row_pub[32] = "", row_fin[32] = "", row_start[32] = "", row_q[32] = "";
+	char row_nvr[160] = "", repo_nvr[280] = "", repo_pub[32] = "";
+	int have_row = 0;
+	if (sn)
+		state[0] = 0;
+	if (dn)
+		detail[0] = 0;
+	if (!qdb) {
+		snprintf(state, sn, "UNKNOWN");
+		snprintf(detail, dn, "builder state unavailable");
+		return;
+	}
+	if (!pkg || !pkg[0]) {
+		snprintf(state, sn, "UNKNOWN");
+		snprintf(detail, dn, "no package named");
+		return;
+	}
+	if (sqlite3_prepare_v2(qdb,
+	    "SELECT state,version,revision,published_at,finished_at,"
+	    "started_at,queued_at FROM builds WHERE package=?1"
+	    " ORDER BY id DESC LIMIT 1", -1, &st, NULL) != SQLITE_OK) {
+		snprintf(state, sn, "UNKNOWN");
+		snprintf(detail, dn, "queue query failed");
+		return;
+	}
+	sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(st) == SQLITE_ROW) {
+		const unsigned char *v;
+		have_row = 1;
+		v = sqlite3_column_text(st, 0);
+		snprintf(row_state, sizeof row_state, "%s", v ? (const char *)v : "");
+		v = sqlite3_column_text(st, 1);
+		snprintf(row_ver, sizeof row_ver, "%s", v ? (const char *)v : "");
+		v = sqlite3_column_text(st, 2);
+		snprintf(row_rev, sizeof row_rev, "%s", v ? (const char *)v : "");
+		v = sqlite3_column_text(st, 3);
+		snprintf(row_pub, sizeof row_pub, "%s", v ? (const char *)v : "");
+		v = sqlite3_column_text(st, 4);
+		snprintf(row_fin, sizeof row_fin, "%s", v ? (const char *)v : "");
+		v = sqlite3_column_text(st, 5);
+		snprintf(row_start, sizeof row_start, "%s", v ? (const char *)v : "");
+		v = sqlite3_column_text(st, 6);
+		snprintf(row_q, sizeof row_q, "%s", v ? (const char *)v : "");
+	}
+	sqlite3_finalize(st);
+	if (!have_row) {
+		snprintf(state, sn, "NEVER BUILT");
+		snprintf(detail, dn, "no queue history");
+		return;
+	}
+	if (row_ver[0])
+		snprintf(row_nvr, sizeof row_nvr, "%s-r%s", row_ver, row_rev);
+	bridge_repo_newest(pkg, repo_nvr, sizeof repo_nvr, repo_pub, sizeof repo_pub);
+	/* Exact-NVR publication wins over any row state: stale queue
+	 * rows must never shadow satisfied revisions. */
+	if (row_nvr[0] && repo_has_nvr(pkg, row_nvr)) {
+		snprintf(state, sn, "PUBLISHED");
+		snprintf(detail, dn, "succeeded (NVR %s live in repository)", row_nvr);
+		return;
+	}
+	if (strcmp(row_state, "QUEUED") == 0 || strcmp(row_state, "BUILDING") == 0) {
+		long age = parse_iso_age_s(row_start[0] ? row_start : row_q);
+		/* Older BLOCKED attempts are relevant context even though
+		 * the latest row wins: the daemon re-derives blocking on
+		 * every scan, so a flip back is one scan away. */
+		long nblocked = 0;
+		sqlite3_stmt *bs = NULL;
+		if (sqlite3_prepare_v2(qdb,
+		    "SELECT COUNT(*) FROM builds WHERE package=?1"
+		    " AND state='BLOCKED'", -1, &bs, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(bs, 1, pkg, -1, SQLITE_TRANSIENT);
+			if (sqlite3_step(bs) == SQLITE_ROW)
+				nblocked = sqlite3_column_int64(bs, 0);
+		}
+		sqlite3_finalize(bs);
+		if (age >= STALLED_AFTER_S) {
+			snprintf(state, sn, "STALLED");
+			if (nblocked > 0)
+				snprintf(detail, dn,
+				         "no progress; %ld older BLOCKED row%s on record",
+				         nblocked, nblocked == 1 ? "" : "s");
+			else
+				snprintf(detail, dn,
+				         "no progress, see package_build_status");
+		} else {
+			snprintf(state, sn, "%s", row_state);
+			if (nblocked > 0)
+				snprintf(detail, dn,
+				         "latest attempt in progress; %ld older BLOCKED row%s on record",
+				         nblocked, nblocked == 1 ? "" : "s");
+			else
+				snprintf(detail, dn, "latest attempt in progress");
+		}
+		return;
+	}
+	if (strcmp(row_state, "BLOCKED") == 0) {
+		snprintf(state, sn, "BLOCKED");
+		snprintf(detail, dn, "waiting on dependencies");
+		return;
+	}
+	if (strcmp(row_state, "INTERRUPTED") == 0) {
+		snprintf(state, sn, "INTERRUPTED");
+		snprintf(detail, dn, "builder died mid-flight; retry explicitly");
+		return;
+	}
+	if (strcmp(row_state, "FAIL") == 0) {
+		if (req && req[0] && row_nvr[0] && strcmp(req, row_nvr) != 0) {
+			snprintf(state, sn, "STALE");
+			snprintf(detail, dn, "failed %s; recipe now requests %s",
+			         row_nvr, req);
+			return;
+		}
+		snprintf(state, sn, "FAILED");
+		if (repo_nvr[0])
+			snprintf(detail, dn, "requested %s failed; repo newest is %s",
+			         row_nvr[0] ? row_nvr : "?", repo_nvr);
+		else
+			snprintf(detail, dn, "requested %s failed",
+			         row_nvr[0] ? row_nvr : "?");
+		return;
+	}
+	if (strcmp(row_state, "PASS") == 0) {
+		if (row_pub[0] || (row_nvr[0] && repo_has_nvr(pkg, row_nvr))) {
+			snprintf(state, sn, "PUBLISHED");
+			if (repo_nvr[0] && row_nvr[0] && strcmp(repo_nvr + strlen(pkg) + 1, row_nvr) != 0)
+				snprintf(detail, dn, "repo newest is %s", repo_nvr);
+			else
+				snprintf(detail, dn, "signed and published");
+			return;
+		}
+		if (parse_iso_age_s(row_fin) >= AWAITING_AFTER_S) {
+			snprintf(state, sn, "AWAITING SIGNING");
+			snprintf(detail, dn, "built, stale: awaiting signing");
+		} else {
+			snprintf(state, sn, "AWAITING SIGNING");
+			snprintf(detail, dn, "built, awaiting signing");
+		}
+		return;
+	}
+	snprintf(state, sn, "%s", row_state[0] ? row_state : "UNKNOWN");
+	snprintf(detail, dn, "see package_build_status");
 }

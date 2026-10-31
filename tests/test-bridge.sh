@@ -17,6 +17,8 @@ BIN=${SBM_BIN:-$PWD/saphira-build-mcp}
 FIX=$ROOT/fixture
 export SBM_QUEUE_DB="$FIX/queue.db"
 export SBM_NOTES_DB="$FIX/notes.db"
+export SBM_RECIPES="$FIX/recipes"
+export SBM_REPO_DIR="$FIX/repo"
 export SBM_BUILDER_NAME="bridgetest"
 
 pass=0
@@ -48,7 +50,9 @@ bridge_events() { sqlite3 "$FIX/notes.db" "SELECT event || '|' || package || '|'
 bridge_count() { sqlite3 "$FIX/notes.db" "SELECT count(*) FROM session_events;"; }
 
 mkqueue() {
-	rm -f "$FIX/queue.db"
+	rm -rf "$FIX/queue.db"
+	mkdir -p "$FIX/recipes/stalepkg2" "$FIX/repo"
+	printf 'pkgname=stalepkg2\npkgver=2.0\npkgrel=2\n' > "$FIX/recipes/stalepkg2/recipe.sh"
 	python3 - "$FIX/queue.db" <<'PY'
 import sqlite3, sys, json, time
 q = sys.argv[1]
@@ -63,6 +67,7 @@ conn.executemany("INSERT INTO builds(id,package,version,revision,recipe_hash,sta
  (4, "waitpkg", "4.0", "1", "h" * 64, "PASS", json.dumps({"stages": {}}), "bridgetest", stale, stale, stale, None),
  (5, "grub", "2.14", "4", "h" * 64, "FAIL", json.dumps({"attempt": "build", "stages": {"BUILD": {"status": "fail", "detail": "buildpkg rc=1"}}}), "bridgetest", today, today, today, None),
  (6, "lvm2", "2.03.39", "4", "h" * 64, "FAIL", json.dumps({"attempt": "build", "stages": {"BUILD": {"status": "fail", "detail": "buildpkg rc=1"}}}), "bridgetest", today, today, today, None),
+ (7, "stalepkg2", "1.0", "1", "h" * 64, "FAIL", json.dumps({"attempt": "build", "stages": {"BUILD": {"status": "fail"}}}), "bridgetest", today, today, today, None),
 ])
 conn.commit()
 PY
@@ -85,6 +90,39 @@ t_contains "obligations lists blockedpkg" "$out" "blockedpkg 1.0-r1 BLOCKED"
 t_contains "obligations lists stalled build" "$out" "stallpkg 3.0-r1 STALLED"
 t_contains "obligations lists stale awaiting" "$out" "waitpkg 4.0-r1 AWAITING SIGNING"
 t_contains "bridge events carry exact keys" "$(bridge_events)" "bridge:bridgetest:5:build.failed:1"
+t_contains "stale recipe attempt listed for reference" "$out" "stalepkg2 1.0-r1 STALE"
+t_contains "stale names the requested revision" "$out" "recipe now 2.0-r2"
+if printf '%s' "$out" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+text = None
+for line in raw.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    d = json.loads(line)
+    t = d["result"]["content"][0]["text"]
+    if "stalepkg2" in t:
+        text = t
+        break
+assert text is not None, "stalepkg2 missing from obligations output"
+failed_sec = text.split("waiting (blocked")[0]
+assert "stalepkg2" not in failed_sec, "stale row leaks into failed bucket"
+assert "stalepkg2" in text.split("stale (recipe moved on")[1], "stale row missing from reference section"
+'; then
+	pass=$((pass + 1)); printf 'PASS  stale row excluded from failed bucket, listed for reference\n'
+else
+	fail=$((fail + 1)); printf 'FAIL  stale bucket placement wrong\n'
+fi
+out=$(mcp '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"package_build_status","arguments":{"name":"stalepkg2"}}}')
+t_contains "status labels the requested NVR" "$out" "requested: 2.0-r2 (recipe)"
+t_contains "status labels effective state" "$out" "effective: STALE"
+out=$(mcp '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"package_build_status","arguments":{"name":"grub"}}}')
+t_contains "status labels repository newest" "$out" "repository newest:"
+t_contains "status labels effective failed" "$out" "effective: FAILED"
+out=$(mcp '{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"package_readiness","arguments":{"package":"grub"}}}')
+t_contains "readiness carries the build verdict" "$out" "build: FAILED"
+t_contains "readiness warns zero notes" "$out" "zero notes means no engineering evidence recorded"
 
 # 2. Idempotent: second run imports nothing new.
 n1=$(bridge_count)
@@ -124,7 +162,7 @@ t_contains "unblocked transition imports build.unblocked" "$(bridge_events)" "bu
 python3 - "$FIX/queue.db" <<'PY'
 import sqlite3, sys
 conn = sqlite3.connect(sys.argv[1])
-conn.execute("INSERT INTO builds(id,package,version,revision,recipe_hash,state,result_json,builder_host,queued_at,started_at,finished_at,published_at) VALUES(7,'grub','2.14','4','h','PASS','{}','bridgetest','t','t','t','t')")
+conn.execute("INSERT INTO builds(id,package,version,revision,recipe_hash,state,result_json,builder_host,queued_at,started_at,finished_at,published_at) VALUES(8,'grub','2.14','4','h','PASS','{}','bridgetest','t','t','t','t')")
 conn.commit()
 PY
 out=$(mcp '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"obligations","arguments":{"package":"grub"}}}')

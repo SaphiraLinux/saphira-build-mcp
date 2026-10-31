@@ -145,12 +145,14 @@ CREATE TABLE packages(package_id INTEGER PRIMARY KEY, name TEXT NOT NULL, versio
 CREATE TABLE reservations(kind TEXT NOT NULL CHECK(kind IN ('user', 'group')), name TEXT NOT NULL, numeric_id INTEGER NOT NULL, owning_package TEXT NOT NULL, first_nvr TEXT NOT NULL, last_nvr TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('ACTIVE', 'TOMBSTONED')), declaration_sha256 TEXT NOT NULL, PRIMARY KEY(kind, name), UNIQUE(kind, numeric_id));
 INSERT INTO packages(name,version,pkgrel,nvr,apk_sha256,is_newest,published_at) VALUES
 ('pkg-a','1.0',1,'pkg-a-1.0-r1','aa',1,'2026-10-27T00:00:00Z'),
-('pkg-c','2.0',1,'pkg-c-2.0-r1','cc',1,'2026-10-27T00:00:00Z');
+('pkg-c','2.0',1,'pkg-c-2.0-r1','cc',1,'2026-10-27T00:00:00Z'),
+('oldlib','1.0',1,'oldlib-1.0-r1','oo',0,'2026-10-26T00:00:00Z'),
+('oldlib','2.0',1,'oldlib-2.0-r1','oo',1,'2026-10-27T00:00:00Z');
 INSERT INTO reservations(kind,name,numeric_id,owning_package,first_nvr,last_nvr,status,declaration_sha256) VALUES
 ('user','pkguser',150,'pkg-a','pkg-a-1.0-r1','pkg-a-1.0-r1','ACTIVE','dd'),
 ('group','pkguser',150,'pkg-a','pkg-a-1.0-r1','pkg-a-1.0-r1','ACTIVE','dd');
 SQL
-printf 'C:xx\nP:pkg-a\nV:1.0-r1\nT:Fixture package A\nL:MIT\no:pkg-a\n\nC:yy\nP:pkg-c\nV:2.0-r1\nT:Leaf\nL:MIT\no:pkg-c\n\n' > "$FIX/installed.db"
+printf 'C:xx\nP:pkg-a\nV:1.0-r1\nT:Fixture package A\nL:MIT\no:pkg-a\n\nC:yy\nP:pkg-c\nV:2.0-r1\nT:Leaf\nL:MIT\no:pkg-c\n\nC:zz\nP:oldlib\nV:1.0-r1\nT:Old lib\nL:MIT\no:oldlib\n\n' > "$FIX/installed.db"
 printf 'build log line 1\nbuild log line 2\n' > "$FIX/logs/pkg-a/build.log"
 python3 -c "open('$FIX/logs/pkg-a/install.log','w').write('x:y\n' * 300)" 
 printf 'install tail\n' >> "$FIX/logs/pkg-a/install.log"
@@ -304,7 +306,17 @@ out=$(mcp '{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"pack
 t_contains "why absent" "$out" "not in pkg-a's closure"
 out=$(mcp '{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"package_installed","arguments":{"name":"pkg-a"}}}')
 t_contains "installed version" "$out" "installed: 1.0-r1"
-t_contains "installed verdict" "$out" "verdict:"
+t_contains "installed verdict up to date" "$out" "verdict: up to date"
+out=$(mcp '{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"package_installed","arguments":{"name":"oldlib"}}}')
+t_contains "installed verdict differ" "$out" "verdict: differ"
+t_contains "installed repository newest" "$out" "oldlib-2.0-r1"
+out=$(mcp '{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"package_build_status","arguments":{"name":"pkg-a"}}}')
+t_contains "status labels requested" "$out" "requested:"
+t_contains "status labels repo newest" "$out" "repository newest:"
+t_contains "status labels effective" "$out" "effective:"
+out=$(mcp '{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"package_readiness","arguments":{"package":"pkg-a"}}}')
+t_contains "readiness carries build verdict" "$out" "build:"
+t_contains "readiness zero notes warning" "$out" "zero notes means no engineering evidence recorded"
 out=$(mcp '{"jsonrpc":"2.0","id":19,"method":"tools/call","params":{"name":"package_build_status","arguments":{"name":"pkg-a"}}}')
 t_contains "status published" "$out" "PUBLISHED"
 t_contains "status sbu" "$out" "SBU"

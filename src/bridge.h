@@ -42,6 +42,29 @@
 int bridge_run(sqlite3 *jdb, long max_rows, long *p_imported,
                long *p_scanned);
 
+/* Requested recipe NVR ("2.14-r4") for a package, or "" when the
+ * tree carries no such recipe. Defined in tools.c (shared recipe
+ * parser); bridge.c uses it so obligations classifies staleness
+ * identically to status. */
+void recipe_requested(const char *pkg, char *out, size_t n);
+
+/* Repository newest NVR for a package with its publication stamp, or
+ * "" when absent/unreadable. Fail-open: never errors. */
+void bridge_repo_newest(const char *pkg, char *nvr, size_t nn,
+                        char *pub, size_t pn);
+
+/* Effective package state from requested NVR + actual repository
+ * publication + the latest queue attempt - never the latest row
+ * alone. state/detail always set; qdb may be NULL (yields UNKNOWN).
+ * STALE means the recipe moved past the failed attempt: visible for
+ * history, excluded from needs-attention. */
+void bridge_effective(sqlite3 *qdb, const char *pkg, const char *req,
+                      char *state, size_t sn, char *detail, size_t dn);
+
+/* True when the ISO UTC timestamp is within the last 7 days (recent
+ * work prioritised in startup/dashboard; older rows stay listed). */
+int bridge_recent(const char *iso);
+
 /* Bounded startup catch-up: open the journal, import, close. Called
  * once per initialize; strictly fail-open and time-bounded so connect
  * never blocks on builder state. */

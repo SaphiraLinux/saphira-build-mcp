@@ -913,6 +913,30 @@ static void nvr_rest(const char *ver, const char *rel, char *out, size_t outsz) 
 	snprintf(out, outsz, "%s-r%s", ver, rel);
 }
 
+/* Requested recipe NVR ("2.14-r4") for a package, or "" when the tree
+ * carries no such recipe. Parsed, never sourced. Shared with bridge.c
+ * so obligations classifies staleness identically to status. */
+void recipe_requested(const char *pkg, char *out, size_t n) {
+	recipe_t *pkgs = NULL;
+	size_t count = 0, i = 0;
+	if (n)
+		out[0] = 0;
+	if (!pkg || !pkg[0])
+		return;
+	if (recipe_collect(&pkgs, &count) != 0)
+		return;
+	for (i = 0; i < count; i++) {
+		if (strcmp(pkgs[i].name, pkg) == 0 && pkgs[i].ver[0]) {
+			if (pkgs[i].rel[0])
+				snprintf(out, n, "%s-r%s", pkgs[i].ver, pkgs[i].rel);
+			else
+				snprintf(out, n, "%s", pkgs[i].ver);
+			break;
+		}
+	}
+	recipe_free_all(pkgs, count);
+}
+
 static void prov(gbuf *b, const char *src) {
 	gbuf_adds(b, "\n[src: ");
 	gbuf_adds(b, src);
@@ -1727,7 +1751,17 @@ static int t_installed(jv *args, gbuf *text, int *is_error, char *err, size_t er
 		gbuf_adds(text, "repository: absent\n");
 	}
 	if (have_inst && have_repo) {
-		gbuf_adds(text, strcmp(iver, nvr) == 0 ? "verdict: up to date\n" : "verdict: differ\n");
+		/* The installed DB records the bare version ("2.14-r3")
+		 * while the repository NVR carries the package name
+		 * ("grub-2.14-r3"): compare the repository NVR with the
+		 * "<name>-" prefix stripped, falling back to the raw
+		 * comparison when the prefix is absent (preserves the
+		 * verdict for odd shapes instead of forcing equality). */
+		const char *rnvr = nvr;
+		size_t nl = strlen(name);
+		if (strncmp(nvr, name, nl) == 0 && nvr[nl] == '-')
+			rnvr = nvr + nl + 1;
+		gbuf_adds(text, strcmp(iver, rnvr) == 0 ? "verdict: up to date\n" : "verdict: differ\n");
 	} else if (!have_inst && !have_repo) {
 		*is_error = 1;
 		gbuf_adds(text, "unknown package: ");
@@ -1817,8 +1851,45 @@ static int t_status(jv *args, gbuf *text, int *is_error, char *err, size_t errsz
 		gbuf_adds(text, name);
 		gbuf_addch(text, '\n');
 	}
-	sbu_baseline_line(db, name, text);
 	sqlite3_finalize(st);
+	/* Labelled revision dimensions: what the recipe requests, what
+	 * the repository currently publishes, what this row recorded,
+	 * and the effective state joining all three. */
+	{
+		char req[160] = "", repo_nvr[280] = "", repo_pub[32] = "";
+		char estate[32] = "", edetail[256] = "";
+		recipe_requested(name, req, sizeof req);
+		bridge_repo_newest(name, repo_nvr, sizeof repo_nvr,
+		                   repo_pub, sizeof repo_pub);
+		bridge_effective(db, name, req, estate, sizeof estate,
+		                 edetail, sizeof edetail);
+		gbuf_adds(text, "requested: ");
+		gbuf_adds(text, req[0] ? req : "- (no recipe)");
+		if (req[0])
+			gbuf_adds(text, " (recipe)");
+		gbuf_addch(text, '\n');
+		gbuf_adds(text, "repository newest: ");
+		if (repo_nvr[0]) {
+			gbuf_adds(text, repo_nvr);
+			if (repo_pub[0]) {
+				gbuf_adds(text, " (published ");
+				gbuf_adds(text, repo_pub);
+				gbuf_addch(text, ')');
+			}
+		} else {
+			gbuf_adds(text, "absent");
+		}
+		gbuf_addch(text, '\n');
+		gbuf_adds(text, "effective: ");
+		gbuf_adds(text, estate);
+		if (edetail[0]) {
+			gbuf_adds(text, " (");
+			gbuf_adds(text, edetail);
+			gbuf_addch(text, ')');
+		}
+		gbuf_addch(text, '\n');
+	}
+	sbu_baseline_line(db, name, text);
 	sqlite3_close(db);
 	prov(text, "build queue");
 	if (text->failed)
@@ -1889,6 +1960,29 @@ static int t_history(jv *args, gbuf *text, int *is_error, char *err, size_t errs
 		char tmp[64];
 		snprintf(tmp, sizeof tmp, "(showing %ld)\n", shown);
 		gbuf_adds(text, tmp);
+	}
+	{
+		char req[160] = "", repo_nvr[280] = "", repo_pub[32] = "";
+		recipe_requested(name, req, sizeof req);
+		bridge_repo_newest(name, repo_nvr, sizeof repo_nvr,
+		                   repo_pub, sizeof repo_pub);
+		gbuf_adds(text, "requested: ");
+		gbuf_adds(text, req[0] ? req : "- (no recipe)");
+		if (req[0])
+			gbuf_adds(text, " (recipe)");
+		gbuf_addch(text, '\n');
+		gbuf_adds(text, "repository newest: ");
+		if (repo_nvr[0]) {
+			gbuf_adds(text, repo_nvr);
+			if (repo_pub[0]) {
+				gbuf_adds(text, " (published ");
+				gbuf_adds(text, repo_pub);
+				gbuf_addch(text, ')');
+			}
+		} else {
+			gbuf_adds(text, "absent");
+		}
+		gbuf_addch(text, '\n');
 	}
 	sbu_baseline_line(db, name, text);
 	sqlite3_finalize(st);
@@ -3365,6 +3459,34 @@ static int t_readiness(jv *args, gbuf *text, int *is_error, char *err, size_t er
 			gbuf_adds(text, "  (full bodies via package_notes_get)\n");
 	}
 	sqlite3_close(db);
+	/* Build verdict, independent of policy evidence: the journal's
+	 * checks say nothing about whether the package builds. Zero
+	 * notes means no engineering evidence was recorded - not that
+	 * the package is verified or healthy. */
+	{
+		char tmp[128], req[160] = "";
+		char estate[32] = "", edetail[256] = "";
+		char dberr2[256];
+		sqlite3 *qdb = db_open_ro(path_queue_db(), dberr2,
+		                          sizeof dberr2);
+		recipe_requested(pkg, req, sizeof req);
+		bridge_effective(qdb, pkg, req, estate, sizeof estate,
+		                 edetail, sizeof edetail);
+		if (qdb)
+			sqlite3_close(qdb);
+		snprintf(tmp, sizeof tmp, "build: %s", estate);
+		gbuf_adds(text, tmp);
+		if (edetail[0]) {
+			gbuf_adds(text, " (");
+			gbuf_adds(text, edetail);
+			gbuf_addch(text, ')');
+		}
+		gbuf_adds(text, " - see package_build_status ");
+		gbuf_adds(text, pkg);
+		gbuf_addch(text, '\n');
+		if (nnotes == 0)
+			gbuf_adds(text, "note: zero notes means no engineering evidence recorded, not verified or healthy\n");
+	}
 	{
 		char tmp[128];
 		snprintf(tmp, sizeof tmp, "notes: %ld (%ld open issue%s)\n",

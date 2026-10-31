@@ -1,4 +1,4 @@
-# Tools reference (v0.10.10, 24 built-ins)
+# Tools reference (v0.10.11, 24 built-ins)
 
 Every section: capability badge, mutation class, parameters (from the
 live `inputSchema`), a valid `tools/call` example, and a **real
@@ -228,7 +228,7 @@ installs.
 ```
 
 ```json
-{"content":[{"type":"text","text":"outstanding builder work:\nfailed (ran and failed, no later success):\n  grub 2.14-r4 FAIL since 2026-10-27T23:05:52Z\nwaiting (blocked/interrupted/stalled):\n  (none)\n..."} }],"isError":false}
+{"content":[{"type":"text","text":"outstanding builder work (needs attention first; stale recipe attempts listed for reference):\nfailed (ran and failed, no later success; 1 recent of 1):\n  grub 2.14-r4 FAIL since 2026-10-27T23:05:52Z\nwaiting (blocked/interrupted/stalled; 0 recent of 0):\n  (none)\n..."} }],"isError":false}
 ```
 
 ```sh
