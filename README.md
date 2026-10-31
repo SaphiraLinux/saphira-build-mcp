@@ -481,12 +481,12 @@ mechanics — grammar, denylists, execution model, and a verified
 ## Documentation
 
 `docs/` is the independently verifiable integration reference
-(every runnable example executed against v0.10.8; `make docs-test`
+(every runnable example executed against v0.10.11; `make docs-test`
 re-executes them):
 
 - `docs/mcp-protocol.md` — JSON-RPC 2.0 over stdio, framing, methods,
   error catalogue, capabilities.
-- `docs/tools.md` — all 23 tools: params, real call/response pairs,
+- `docs/tools.md` — all 24 tools: params, real call/response pairs,
   and a curl + PowerShell form per tool.
 - `docs/jsonrpc-examples.md` — printf/pipe/Python sessions without
   any agent platform.

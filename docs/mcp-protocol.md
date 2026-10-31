@@ -158,10 +158,11 @@ running degraded:
 - `SBM_BUILD=on` (default) / `off`. Off hides `build_request` and
   `package_bump` only.
 
-Always on, unswitchable: the journal ten (4 checkpoints, 2 notes,
-`total_recall`, 3 policy tools) plus any configured externals.
-Proven matrices (v0.10.8): default **23**, build-off **21**,
-saphira-off **12**, both off (locked-down) **10**.
+Always on, unswitchable: the journal eleven (4 checkpoints, 2 notes,
+`total_recall`, `obligations`, 3 policy tools) plus any configured
+externals.
+Proven matrices (v0.10.11): default **24**, build-off **22**,
+saphira-off **13**, both off (locked-down) **11**.
 
 ## Process lifecycle
 
