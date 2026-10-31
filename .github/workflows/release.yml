@@ -131,7 +131,7 @@ jobs:
             -Wl,--out-implib,libsqlite3.dll.a
           [ "$(./saphira-build-mcp.windows-builtin.exe --version | tr -d '\r')" = "saphira-build-mcp ${GITHUB_REF_NAME#v}" ]
           lock=$(SBM_SAPHIRA=off SBM_BUILD=off SBM_TOOLS_CONF=/nonexistent ./saphira-build-mcp.windows-builtin.exe --list-tools | grep -o '"name":"' | wc -l | tr -d '[:space:]')
-          [ "$lock" = 10 ]
+          [ "$lock" = 11 ]
       - uses: actions/upload-artifact@v4
         with:
           name: dist-windows
