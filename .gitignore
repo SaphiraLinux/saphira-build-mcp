@@ -7,3 +7,4 @@
 src/*.o
 # live-test journal: Egg-local operational data, never versioned
 /test-notes.db
+/saphira-build-mcp-builtin
