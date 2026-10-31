@@ -1,4 +1,5 @@
 #include "tools.h"
+#include "bridge.h"
 #include "conf.h"
 #include "db.h"
 #include "runner.h"
@@ -2186,6 +2187,57 @@ static int t_queue(jv *args, gbuf *text, int *is_error, char *err, size_t errsz)
 }
 
 /* ------------------------------------------------------------------ */
+/* obligations                                                           */
+/* ------------------------------------------------------------------ */
+/* Outstanding builder work with task correlation, recall-ready.
+ *
+ * Read-only on both databases (journal reads plus a read-only queue
+ * open); the one write on this path is the bounded fail-open
+ * catch-up import (bridge_run), which never fails the call. Buckets
+ * stay separate: terminal failures, waiting work, stale awaiting
+ * signing, linked checkpoints by exact package match only. No task
+ * associations are invented: bridge rows without a matching active
+ * checkpoint list unlinked. A published NVR is succeeded work even
+ * when an older queue row reads BLOCKED/FAIL (same-NVR only). */
+static int t_obligations(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *pkg;
+	long limit;
+	int bad = 0;
+	char dberr[256];
+	sqlite3 *db = NULL;
+	long imported = 0, scanned = 0;
+	(void)err;
+	(void)errsz;
+	pkg = arg_str(args, "package");
+	limit = clamp_long(arg_long(args, "limit", 50, &bad), 1, 200);
+	if (bad)
+		return -1;
+	db = db_open_notes(dberr, sizeof dberr);
+	if (!db) {
+		*is_error = 1;
+		gbuf_adds(text, "journal unavailable: ");
+		gbuf_adds(text, dberr);
+		gbuf_addch(text, '\n');
+		return 0;
+	}
+	/* Bounded catch-up first so failures from MCP downtime surface
+	 * without any agent having to remember a separate call. */
+	bridge_run(db, 200, &imported, &scanned);
+	bridge_render(db, pkg, limit, text);
+	if (imported > 0) {
+		char tmp[96];
+		snprintf(tmp, sizeof tmp,
+		         "[reconciled %ld missed builder event(s)]\n", imported);
+		gbuf_adds(text, tmp);
+	}
+	sqlite3_close(db);
+	prov(text, "notes.db (local journal) + build queue");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* package_identity                                                    */
 /* ------------------------------------------------------------------ */
 static void passwd_lookup(const char *path, const char *name, int is_group, gbuf *out) {
@@ -4334,6 +4386,10 @@ void checkpoint_instructions(gbuf *out) {
 	if (total <= 0) {
 		gbuf_adds(out, "No active checkpoints recorded.");
 		sqlite3_close(db);
+		/* Builder obligations awareness: one bounded line so a new
+		 * agent learns of failed/blocked/stalled work without
+		 * polling. See below for the catch-up contract. */
+		bridge_instruction_line(out);
 		return;
 	}
 	snprintf(tmp, sizeof tmp, "Active checkpoints (%ld total): ", total);
@@ -4416,6 +4472,11 @@ void checkpoint_instructions(gbuf *out) {
 	} else {
 		gbuf_adds(out, ".");
 	}
+	/* Builder obligations awareness: one bounded line so a new agent
+	 * learns of failed/blocked/stalled work without polling. The
+	 * catch-up import itself runs in bridge_startup_sync (mcp.c
+	 * initialize) and the obligations tool; this line only counts. */
+	bridge_instruction_line(out);
 }
 
 /* ------------------------------------------------------------------ */
@@ -5323,9 +5384,10 @@ static int t_total_recall(jv *args, gbuf *text, int *is_error, char *err, size_t
 /* ------------------------------------------------------------------ */
 /* tools.conf extensions                                                */
 /* ------------------------------------------------------------------ */
-/* The 23 built-in entries, in historical order. tools_list_json emits
- * these (minus expose-offs) followed by registered externals, so the
- * no-conf document is byte-identical to the pre-0.8.0 static text. */
+/* The 24 built-ins, in historical order. tools_list_json emits
+ * these (minus expose-offs) followed by registered externals; the
+ * no-conf document is the pre-0.8.0 static text plus the tools added
+ * since (obligations being the bridge/reconcile surface). */
 static const struct {
 	const char *name;
 	const char *entry;
@@ -5353,6 +5415,7 @@ static const struct {
 	{ "checkpoint_list", "{\"name\":\"checkpoint_list\",\"description\":\"List the active checkpoint register (newest first, with total count). Closed work is hidden unless status is closed/all or include_closed is set.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"closed\",\"all\"]},\"project\":{\"type\":\"string\"},\"workstream\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"},\"include_closed\":{\"type\":\"boolean\"}}}}" },
 	{ "checkpoint_close", "{\"name\":\"checkpoint_close\",\"description\":\"Retire a finished checkpoint from the active register by id. Never deletes: the row stays resumable by id.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"number\"}},\"required\":[\"id\"]}}" },
 	{ "total_recall", "{\"name\":\"total_recall\",\"description\":\"Bounded historical retrieval over the journal: ranked query, chronological timeline, or paginated export. Each mode answers a different question: query ranks recorded text by relevance and cannot address saved state by checkpoint label (use checkpoint_list/resume for that); timeline reconstructs events in order with cursors; export dumps rows. Checkpoints restore working state cheaply; use this only when deeper evidence is required, never automatically.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"query\",\"timeline\",\"export\"]},\"query\":{\"type\":\"string\"},\"session_id\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"project\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"},\"hostname\":{\"type\":\"string\"},\"username\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\",\"enum\":[\"summary\",\"full\"]},\"budget\":{\"type\":\"string\",\"enum\":[\"compact\",\"standard\",\"extended\",\"deep\"]},\"limit\":{\"type\":\"number\"},\"cursor\":{\"type\":\"string\"}}}}" },
+	{ "obligations", "{\"name\":\"obligations\",\"description\":\"Outstanding builder work with task correlation: failed, waiting and stale awaiting-signing builds plus linked checkpoints. Runs a bounded fail-open catch-up import first, so MCP downtime misses nothing.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"}}}}" },
 };
 #define NBASE (int)(sizeof base_tools / sizeof base_tools[0])
 
@@ -5580,6 +5643,8 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
 		return t_checkpoint_close(args, text, is_error, err, sizeof err);
 	if (strcmp(name, "total_recall") == 0)
 		return t_total_recall(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "obligations") == 0)
+		return t_obligations(args, text, is_error, err, sizeof err);
 	/* Registered externals: fixed conf argv, no caller arguments. */
 	{
 		ext_conf conf2;

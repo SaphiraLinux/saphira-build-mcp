@@ -266,7 +266,7 @@ t_contains "initialize names server" "$out" '"name":"saphira-build-mcp"'
 out=$(mcp '{"jsonrpc":"2.0","id":2,"method":"ping"}')
 t_contains "ping empty result" "$out" '"result":{}'
 out=$(mcp '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')
-for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness build_request package_bump checkpoint_save checkpoint_resume checkpoint_list checkpoint_close; do
+for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness build_request package_bump checkpoint_save checkpoint_resume checkpoint_list checkpoint_close obligations; do
 	t_contains "tools/list has $tool" "$out" "\"name\":\"$tool\""
 done
 out=$(mcp '{"jsonrpc":"2.0","id":4,"method":"nope"}')
@@ -813,7 +813,7 @@ export SBM_TSV="$PVOID/accounts.tsv" SBM_PASSWD="$PVOID/passwd"
 export SBM_GROUP="$PVOID/group" SBM_APKDB="$PVOID/installed.db"
 export SBM_TOOLS_CONF="$PVOID/no-such.conf"
 out=$("$BIN" --list-tools)
-for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness; do
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness obligations; do
 	t_contains "portable list keeps $n" "$out" "\"name\":\"$n\""
 done
 for n in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity; do
@@ -870,7 +870,7 @@ export SBM_GROUP="$FIX/group" SBM_APKDB="$FIX/installed.db"
 # two privileged mutations refuse as unknown. Inline env keeps this
 # block self-contained (nothing leaks past it).
 out=$(SBM_BUILD=off SBM_TOOLS_CONF="$FIX/no-such.conf" "$BIN" --list-tools)
-for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness package_search package_info build_queue; do
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness package_search package_info build_queue obligations; do
 	t_contains "build-off keeps $n" "$out" "\"name\":\"$n\""
 done
 for n in build_request package_bump; do
@@ -885,7 +885,7 @@ t_not_contains "build-off journal works" "$out" '"code":-32602'
 # combined: no builder state and no build permission leaves the
 # journal set (4 checkpoints + 2 notes + total_recall + 3 policy).
 out=$(SBM_BUILD=off SBM_SAPHIRA=off SBM_TOOLS_CONF="$FIX/no-such.conf" "$BIN" --list-tools)
-for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness; do
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness obligations; do
 	t_contains "locked-down keeps $n" "$out" "\"name\":\"$n\""
 done
 for n in package_search build_queue build_request package_bump; do

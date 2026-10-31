@@ -1,4 +1,4 @@
-# Tools reference (v0.10.8, 23 built-ins)
+# Tools reference (v0.10.10, 24 built-ins)
 
 Every section: capability badge, mutation class, parameters (from the
 live `inputSchema`), a valid `tools/call` example, and a **real
@@ -206,6 +206,37 @@ curl -s localhost:8473/call -d '{"tool":"package_readiness","arguments":{"packag
 
 ```powershell
 .\mcp-stdio-client.ps1 -Exe .\saphira-build-mcp.windows-builtin.exe -Cmd call -Name package_readiness -Arguments '{"package":"saphira-build-mcp"}'
+```
+
+## `obligations` — JOURNAL + BUILD-STATE · READ-ONLY
+
+Outstanding builder work with task correlation. Buckets stay
+separate: terminal failures (FAILED with no later success),
+waiting work (BLOCKED/INTERRUPTED/STALLED), stale awaiting signing
+(PASS over 24h, unpublished), plus linked checkpoints by exact
+package match only — no task associations are invented. Runs a
+bounded fail-open catch-up import first, so builder history missed
+while this MCP was absent still surfaces; a published exact NVR
+reads succeeded even when an older queue row reads BLOCKED/FAIL.
+`package` and `limit` optional. The builder stays independent (its
+own opportunistic journal writes never gate a build), the dashboard
+needs no MCP, and this tool never builds, signs, publishes or
+installs.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"obligations","arguments":{"package":"grub"}}}
+```
+
+```json
+{"content":[{"type":"text","text":"outstanding builder work:\nfailed (ran and failed, no later success):\n  grub 2.14-r4 FAIL since 2026-10-27T23:05:52Z\nwaiting (blocked/interrupted/stalled):\n  (none)\n..."} }],"isError":false}
+```
+
+```sh
+curl -s localhost:8473/call -d '{"tool":"obligations","arguments":{"package":"lvm2"}}'
+```
+
+```powershell
+.\mcp-stdio-client.ps1 -Exe .\saphira-build-mcp.windows-builtin.exe -Cmd call -Name obligations -Arguments '{"package":"grub"}'
 ```
 
 ## `total_recall` — JOURNAL · READ-ONLY

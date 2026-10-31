@@ -1,4 +1,5 @@
 #include "mcp.h"
+#include "bridge.h"
 #include "json.h"
 #include "tools.h"
 #include "wincompat.h"
@@ -124,7 +125,11 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		 * guidance plus the live active set. Read-only and
 		 * fail-open (an unavailable journal yields the static
 		 * half); a new agent learns the register without
-		 * guessing ids. */
+		 * guessing ids. The builder catch-up import runs
+		 * first so failures from MCP downtime are already in
+		 * the journal when instructions count them: bounded
+		 * and fail-open, connect never blocks on it. */
+		bridge_startup_sync();
 		checkpoint_instructions(&ins);
 		gbuf_adds(&r, "{\"protocolVersion\":");
 		json_escape(&r, pv, strlen(pv));

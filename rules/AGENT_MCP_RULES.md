@@ -3,10 +3,15 @@
 Copy this discipline into your agent's persistent instructions. It is
 a template: keep it short, adapt it, do not bloat it.
 
-At session start, call `checkpoint_list` first, before any other
-work. If checkpoints exist, show a concise list (id, label, title)
-and ask the operator which to resume, close, or leave alone. If
-none exist, ask what the operator wants to do.
+At session start, read the pushed `initialize` register first
+(checkpoints plus the open-builder-obligations line), then call
+`checkpoint_list` for the full register before any other work. If
+obligations are listed, call `obligations` to see what failed,
+what is waiting, and what remains outstanding — then investigate
+(build log/status/history) and propose before acting. If checkpoints
+exist, show a concise list (id, label, title) and ask the operator
+which to resume, close, or leave alone. If none exist, ask what the
+operator wants to do.
 
 Never automatically resume or close a checkpoint. When instructed,
 call `checkpoint_resume` for the selected checkpoint and treat its
