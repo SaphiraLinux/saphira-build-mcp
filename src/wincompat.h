@@ -59,4 +59,15 @@ static inline void sb_gmtime(const time_t *t, struct tm *tm) {
 #endif
 }
 
+/* timegm (UTC mktime) is POSIX-only; the CRT spelling is _mkgmtime.
+ * Same contract: seconds since the epoch for a UTC-broken-down tm,
+ * (time_t)-1 on failure. */
+static inline time_t sb_timegm(struct tm *tm) {
+#ifdef _WIN32
+	return _mkgmtime(tm);
+#else
+	return timegm(tm);
+#endif
+}
+
 #endif

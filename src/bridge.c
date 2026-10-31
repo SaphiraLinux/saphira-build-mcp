@@ -47,7 +47,7 @@
 static void now_iso(char *out, size_t n) {
 	time_t t = time(NULL);
 	struct tm tm;
-	gmtime_r(&t, &tm);
+	sb_gmtime(&t, &tm);
 	snprintf(out, n, "%04d-%02d-%02dT%02d:%02d:%02dZ",
 	         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
 	         tm.tm_hour, tm.tm_min, tm.tm_sec);
@@ -105,7 +105,7 @@ static long parse_iso_age_s(const char *iso) {
 	tm.tm_hour = h;
 	tm.tm_min = mi;
 	tm.tm_sec = s;
-	then = timegm(&tm);
+	then = sb_timegm(&tm);
 	now = time(NULL);
 	if (then == (time_t)-1)
 		return -1;
