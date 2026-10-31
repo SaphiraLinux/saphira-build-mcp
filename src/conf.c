@@ -321,12 +321,17 @@ void conf_load(ext_conf *c) {
 			t->exe = strdup(toks[2]);
 			t->cls = strdup(toks[3]);
 			t->dir = strdup(toks[7]);
-			t->timeout_s = to;
-			t->max_bytes = mb;
-			/* Sandbox defaults on for test, off for read;
-			 * conf states it explicitly either way. */
-			t->sandbox = strcmp(toks[6], "on") == 0;
-			t->argv = calloc((size_t)(n - dash), sizeof(char *));
+		t->timeout_s = to;
+		t->max_bytes = mb;
+		/* Sandbox defaults on for test, off for read;
+		 * conf states it explicitly either way. */
+		t->sandbox = strcmp(toks[6], "on") == 0;
+		/* argv holds exe + post-"--" args + the NULL
+		 * terminator: n - dash + 1 slots. Anything less
+		 * writes the terminator past the allocation (heap
+		 * corruption that only shows under some allocators
+		 * and binary layouts - never rely on the slack). */
+		t->argv = calloc((size_t)(n - dash + 1), sizeof(char *));
 			if (!t->name || !t->exe || !t->cls || !t->dir || !t->argv) {
 				free(t->name);
 				free(t->exe);

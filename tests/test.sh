@@ -724,6 +724,7 @@ EOF
 chmod +x "$FIX/bin/ext-loud.sh"
 cat > "$FIX/ext-good.conf" <<EOF
 tool ext_ok $FIX/bin/ext-ok.sh read 10 65536 off $FIX --
+tool ext_args $FIX/bin/ext-ok.sh read 10 65536 off $FIX -- --no-pager status --short
 tool ext_fail $FIX/bin/ext-fail.sh read 10 65536 off $FIX --
 tool ext_slow $FIX/bin/ext-slow.sh read 1 65536 off $FIX --
 tool ext_loud $FIX/bin/ext-loud.sh read 10 64 off $FIX --
@@ -731,11 +732,16 @@ tool ext_boxed $FIX/bin/ext-ok.sh read 10 65536 on $FIX --
 EOF
 out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":201,"method":"tools/list"}')
 t_contains "ext list has ext_ok" "$out" '"name":"ext_ok"'
+# Regression: extra post-"--" argv must not overrun the argv vector
+# (heap corruption that crashed glibc builds at list time).
+t_contains "ext list has ext_args" "$out" '"name":"ext_args"'
 t_contains "ext list describes class" "$out" 'External (read):'
 out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":202,"method":"tools/call","params":{"name":"ext_ok","arguments":{}}}')
 t_contains "ext call output" "$out" 'ext-ok args:'
 t_contains "ext call exit 0" "$out" '[exit=0'
 t_contains "ext call no error" "$out" '"isError":false'
+out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":206,"method":"tools/call","params":{"name":"ext_args","arguments":{}}}')
+t_contains "ext args pass through" "$out" '--no-pager status --short'
 out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":203,"method":"tools/call","params":{"name":"ext_fail","arguments":{}}}')
 t_contains "ext fail isError" "$out" '"isError":true'
 t_contains "ext fail exit 3" "$out" '[exit=3'
