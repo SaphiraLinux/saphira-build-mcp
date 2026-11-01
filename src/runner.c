@@ -29,11 +29,13 @@ static void utc_now(char *out, size_t n) {
 	strftime(out, n, "%Y-%m-%dT%H:%M:%SZ", &tm);
 }
 
+#ifndef _WIN32
 static long elapsed_ms(struct timespec a, struct timespec b) {
 	long s = (long)(b.tv_sec - a.tv_sec);
 	long ns = (long)(b.tv_nsec - a.tv_nsec);
 	return s * 1000 + ns / 1000000;
 }
+#endif
 
 /* Best-effort audit row. A failed audit never fails the tool call:
  * the failure is reported on stderr, the result stands. */
@@ -148,6 +150,8 @@ int runner_exec(const ext_tool *t, const char *author,
 	 * but every call fails closed here, audited like any other
 	 * refusal. */
 	(void)pipefd;
+	(void)infd;
+	(void)in_off;
 	(void)t0;
 	(void)now;
 	(void)exec_argv;
