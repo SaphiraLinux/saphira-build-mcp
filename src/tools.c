@@ -1779,6 +1779,7 @@ static int t_installed(jv *args, gbuf *text, int *is_error, char *err, size_t er
 /* ------------------------------------------------------------------ */
 /* package_build_status                                                */
 /* ------------------------------------------------------------------ */
+static void fore_checklist(const char *pkg, gbuf *text);
 static int recipe_is_disabled(const char *name, int *known) {
 	recipe_t *pkgs = NULL;
 	size_t n = 0, i;
@@ -1891,6 +1892,9 @@ static int t_status(jv *args, gbuf *text, int *is_error, char *err, size_t errsz
 		gbuf_addch(text, '\n');
 	}
 	sbu_baseline_line(db, name, text);
+	/* Pre-build checklist, read-only: what foresight says about
+	 * this package, blockers first. Advisory only, never gating. */
+	fore_checklist(name, text);
 	sqlite3_close(db);
 	prov(text, "build queue");
 	if (text->failed)
@@ -3749,6 +3753,8 @@ static int t_build_request(jv *args, gbuf *text, int *is_error, char *err, size_
 	gbuf_adds(text, "when status shows AWAITING SIGNING, ask the operator to run `sudo sign-apk-repo ");
 	gbuf_adds(text, pkg);
 	gbuf_adds(text, "`\n");
+	/* What foresight says before this build runs: advisory only. */
+	fore_checklist(pkg, text);
 	prov(text, "saphira-build scan, build queue, notes.db");
 	if (text->failed)
 		return -1;
@@ -5533,25 +5539,127 @@ static int fore_polarity_ok(const char *p) {
 	return strcmp(p, "do") == 0 || strcmp(p, "do-not") == 0;
 }
 
+static int fore_sev_ok(const char *s) {
+	return strcmp(s, "blocker") == 0 || strcmp(s, "advisory") == 0;
+}
+
+/* Significant tokens of a requirement: lowercase alnum runs of 4+,
+ * up to 8, for the near-duplicate hint. Short glue words carry no
+ * signal, so they are skipped by construction. */
+static int fore_tokens(const char *s, char toks[8][32]) {
+	int n = 0;
+	char cur[32];
+	int cl = 0;
+	size_t i, len = strlen(s);
+	for (i = 0; i <= len; i++) {
+		unsigned char c = (unsigned char)s[i];
+		int word = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+		           (c >= 'A' && c <= 'Z');
+		if (word) {
+			if (cl < (int)sizeof cur - 1)
+				cur[cl++] = (char)(c >= 'A' && c <= 'Z' ? c + 32 : c);
+			continue;
+		}
+		if (cl >= 4 && n < 8) {
+			int k, dup = 0;
+			cur[cl] = 0;
+			for (k = 0; k < n; k++) {
+				if (strcmp(toks[k], cur) == 0) { dup = 1; break; }
+			}
+			if (!dup) {
+				strcpy(toks[n], cur);
+				n++;
+			}
+		}
+		cl = 0;
+	}
+	return n;
+}
+
+#define FORE_HINT_MAX 3
+
+struct fore_hit {
+	long long id;
+	char pol[16];
+	char sev[16];
+	char scope[129];
+	char req[FORE_REQ_CAP + 1];
+};
+
+/* Near-duplicate hint: existing rows sharing at least two
+ * significant tokens with the candidate. Heuristic, read-only, and
+ * never a gate — the record always lands; the hint only asks the
+ * recorder to check before re-recording. */
+static int fore_hint_fill(sqlite3 *db, const char *req,
+                          struct fore_hit *hits) {
+	sqlite3_stmt *st = NULL;
+	char toks[8][32];
+	int ntok, nhit = 0, rc;
+	ntok = fore_tokens(req, toks);
+	if (ntok < 2)
+		return 0;
+	if (sqlite3_prepare_v2(db,
+	    "SELECT id,package,polarity,severity,requirement"
+	    " FROM requirements ORDER BY id DESC LIMIT 500",
+	    -1, &st, NULL) != SQLITE_OK)
+		return 0;
+	while ((rc = sqlite3_step(st)) == SQLITE_ROW && nhit < 64) {
+		const char *rt =
+		    (const char *)sqlite3_column_text(st, 4);
+		int shared = 0, k;
+		if (!rt)
+			continue;
+		for (k = 0; k < ntok; k++) {
+			if (cistrstr(rt, toks[k]) != NULL)
+				shared++;
+		}
+		if (shared >= 2 && nhit < FORE_HINT_MAX) {
+			const char *p =
+			    (const char *)sqlite3_column_text(st, 2);
+			const char *s =
+			    (const char *)sqlite3_column_text(st, 3);
+			const char *sc =
+			    (const char *)sqlite3_column_text(st, 1);
+			hits[nhit].id = sqlite3_column_int64(st, 0);
+			snprintf(hits[nhit].pol, sizeof hits[nhit].pol, "%.15s",
+			         p ? p : "?");
+			snprintf(hits[nhit].sev, sizeof hits[nhit].sev, "%.15s",
+			         (s && s[0]) ? s : "unrated");
+			snprintf(hits[nhit].scope, sizeof hits[nhit].scope, "%.128s",
+			         (sc && sc[0]) ? sc : "tree-wide");
+			snprintf(hits[nhit].req, sizeof hits[nhit].req, "%.1024s",
+			         rt);
+			nhit++;
+		}
+	}
+	sqlite3_finalize(st);
+	(void)rc;
+	return nhit;
+}
+
 static int t_foresight(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
-	const char *mode, *pkg, *pol, *req, *evi, *aa;
+	const char *mode, *pkg, *pol, *req, *evi, *aa, *sev;
 	char author[CREDIT_CAP + 1], dberr[256], now[21], rcommit[41];
 	sqlite3 *db = NULL;
 	sqlite3_stmt *st = NULL;
 	prov_t pv;
-	int rc, bi;
+	int rc, bi, incret = 0;
 	long limit;
 	int bad = 0;
 	(void)err;
 	(void)errsz;
 	mode = arg_str(args, "mode");
-	if (!mode || (strcmp(mode, "record") != 0 && strcmp(mode, "check") != 0))
+	if (!mode || (strcmp(mode, "record") != 0 && strcmp(mode, "check") != 0 &&
+	              strcmp(mode, "retire") != 0))
 		return -1;
 	pkg = arg_str(args, "package");
 	if (!pkg)
 		pkg = "";
 	limit = clamp_long(arg_long(args, "limit", 20, &bad), 1, 200);
 	if (bad)
+		return -1;
+	incret = arg_bool(args, "include_retired", 0);
+	if (incret < 0)
 		return -1;
 	aa = arg_str(args, "author");
 	if (aa && strlen(aa) > CREDIT_CAP)
@@ -5572,7 +5680,10 @@ static int t_foresight(jv *args, gbuf *text, int *is_error, char *err, size_t er
 		pol = arg_str(args, "polarity");
 		req = arg_str(args, "requirement");
 		evi = arg_str(args, "evidence");
+		sev = arg_str(args, "severity");
 		if (!pol || !fore_polarity_ok(pol) || !req || !req[0])
+			return -1;
+		if (!sev || !fore_sev_ok(sev))
 			return -1;
 		if (!evi)
 			evi = "";
@@ -5580,42 +5691,113 @@ static int t_foresight(jv *args, gbuf *text, int *is_error, char *err, size_t er
 			return -1;
 		utc_now(now);
 		git_recipe_commit(pkg, rcommit);
+		{
+			struct fore_hit hits[FORE_HINT_MAX];
+			int nhit, h;
+			/* Near-duplicate hint first (read-only): the insert
+			 * below must not match itself. */
+			nhit = fore_hint_fill(db, req, hits);
+			rc = sqlite3_prepare_v2(db,
+			    "INSERT INTO requirements(package,polarity,severity,requirement,evidence,"
+			    "author,recorder,recipe_commit,created_at,"
+			    "session_id,hostname,username,cwd,agent,ctx_origin)"
+			    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)", -1, &st, NULL);
+			if (rc == SQLITE_OK) {
+				sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+				sqlite3_bind_text(st, 2, pol, -1, SQLITE_TRANSIENT);
+				sqlite3_bind_text(st, 3, sev, -1, SQLITE_TRANSIENT);
+				sqlite3_bind_text(st, 4, req, -1, SQLITE_TRANSIENT);
+				sqlite3_bind_text(st, 5, evi, -1, SQLITE_TRANSIENT);
+				sqlite3_bind_text(st, 6, author, -1, SQLITE_TRANSIENT);
+				sqlite3_bind_text(st, 7, journal_recorder, -1, SQLITE_TRANSIENT);
+				if (rcommit[0])
+					sqlite3_bind_text(st, 8, rcommit, -1, SQLITE_TRANSIENT);
+				else
+					sqlite3_bind_null(st, 8);
+				sqlite3_bind_text(st, 9, now, -1, SQLITE_TRANSIENT);
+				bi = 10;
+				prov_bind(st, &bi, &pv);
+				rc = sqlite3_step(st);
+			}
+			if (rc == SQLITE_DONE) {
+				char tmp[160];
+				snprintf(tmp, sizeof tmp, "recorded requirement %lld [%s] [%s] for ",
+				         (long long)sqlite3_last_insert_rowid(db), pol, sev);
+				gbuf_adds(text, tmp);
+				gbuf_adds(text, pkg[0] ? pkg : "tree-wide");
+				gbuf_adds(text, " by ");
+				gbuf_adds(text, author);
+				gbuf_addch(text, '\n');
+				for (h = 0; h < nhit; h++) {
+					char ht[96];
+					if (!h)
+						gbuf_adds(text, "similar existing (record only if genuinely new):\n");
+					snprintf(ht, sizeof ht, "  [%lld] ",
+					         hits[h].id);
+					gbuf_adds(text, ht);
+					gbuf_adds(text, hits[h].pol);
+					gbuf_adds(text, " [");
+					gbuf_adds(text, hits[h].sev);
+					gbuf_adds(text, "] (");
+					gbuf_adds(text, hits[h].scope);
+					gbuf_adds(text, "): ");
+					gbuf_adds(text, hits[h].req);
+					gbuf_addch(text, '\n');
+				}
+			} else {
+				*is_error = 1;
+				gbuf_adds(text, "journal write failed\n");
+			}
+			sqlite3_finalize(st);
+			sqlite3_close(db);
+			prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+			if (text->failed)
+				return -1;
+			return 0;
+		}
+	}
+	/* Retire: withdraw a requirement that is wrong, duplicated or no
+	 * longer applicable. Reason required, history preserved, row
+	 * excluded from normal checks — the same never-delete semantics
+	 * as checkpoint_close. Rows stay active until deliberately
+	 * retired here; nothing ever expires by age. */
+	if (strcmp(mode, "retire") == 0) {
+		long rid;
+		const char *reason;
+		sqlite3_int64 changed;
+		reason = arg_str(args, "reason");
+		rid = arg_long(args, "id", -1, &bad);
+		if (bad || rid <= 0 || !reason || !reason[0])
+			return -1;
+		if (strlen(reason) > FORE_EVI_CAP)
+			return -1;
 		rc = sqlite3_prepare_v2(db,
-		    "INSERT INTO requirements(package,polarity,requirement,evidence,"
-		    "author,recorder,recipe_commit,created_at,"
-		    "session_id,hostname,username,cwd,agent,ctx_origin)"
-		    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)", -1, &st, NULL);
+		    "UPDATE requirements SET status='retired',retired_reason=?1"
+		    " WHERE id=?2 AND status='active'", -1, &st, NULL);
 		if (rc == SQLITE_OK) {
-			sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(st, 2, pol, -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(st, 3, req, -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(st, 4, evi, -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(st, 5, author, -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(st, 6, journal_recorder, -1, SQLITE_TRANSIENT);
-			if (rcommit[0])
-				sqlite3_bind_text(st, 7, rcommit, -1, SQLITE_TRANSIENT);
-			else
-				sqlite3_bind_null(st, 7);
-			sqlite3_bind_text(st, 8, now, -1, SQLITE_TRANSIENT);
-			bi = 9;
-			prov_bind(st, &bi, &pv);
+			sqlite3_bind_text(st, 1, reason, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_int64(st, 2, (sqlite3_int64)rid);
 			rc = sqlite3_step(st);
 		}
-		if (rc == SQLITE_DONE) {
-			char tmp[160];
-			snprintf(tmp, sizeof tmp, "recorded requirement %lld [%s] for ",
-			         (long long)sqlite3_last_insert_rowid(db), pol);
+		changed = sqlite3_changes(db);
+		sqlite3_finalize(st);
+		sqlite3_close(db);
+		if (rc == SQLITE_DONE && changed == 1) {
+			char tmp[96];
+			snprintf(tmp, sizeof tmp, "retired requirement %ld\n", rid);
 			gbuf_adds(text, tmp);
-			gbuf_adds(text, pkg[0] ? pkg : "tree-wide");
-			gbuf_adds(text, " by ");
-			gbuf_adds(text, author);
+			gbuf_adds(text, "reason: ");
+			gbuf_adds(text, reason);
 			gbuf_addch(text, '\n');
 		} else {
 			*is_error = 1;
-			gbuf_adds(text, "journal write failed\n");
+			gbuf_adds(text, "unknown or already retired requirement: ");
+			{
+				char tmp[32];
+				snprintf(tmp, sizeof tmp, "%ld\n", rid);
+				gbuf_adds(text, tmp);
+			}
 		}
-		sqlite3_finalize(st);
-		sqlite3_close(db);
 		prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
 		if (text->failed)
 			return -1;
@@ -5625,30 +5807,42 @@ static int t_foresight(jv *args, gbuf *text, int *is_error, char *err, size_t er
 		int shown = 0;
 		gbuf_adds(text, "requirements for ");
 		gbuf_adds(text, pkg[0] ? pkg : "tree-wide");
-		gbuf_adds(text, " (tree-wide included):\n");
+		gbuf_adds(text, " (tree-wide included, blockers first):\n");
 		if (sqlite3_prepare_v2(db,
-		    "SELECT id,package,polarity,requirement,evidence,author,recorder,"
-		    "recipe_commit,created_at,agent,ctx_origin"
+		    incret ?
+		    "SELECT id,package,polarity,severity,requirement,evidence,author,recorder,"
+		    "recipe_commit,created_at,agent,ctx_origin,status,retired_reason"
 		    " FROM requirements WHERE (package=?1 OR package='')"
-		    " ORDER BY id DESC LIMIT ?2", -1, &st, NULL) == SQLITE_OK) {
+		    " ORDER BY CASE severity WHEN 'blocker' THEN 0"
+		    " WHEN 'advisory' THEN 1 ELSE 2 END, id DESC LIMIT ?2" :
+		    "SELECT id,package,polarity,severity,requirement,evidence,author,recorder,"
+		    "recipe_commit,created_at,agent,ctx_origin"
+		    " FROM requirements WHERE (package=?1 OR package='') AND status='active'"
+		    " ORDER BY CASE severity WHEN 'blocker' THEN 0"
+		    " WHEN 'advisory' THEN 1 ELSE 2 END, id DESC LIMIT ?2",
+		    -1, &st, NULL) == SQLITE_OK) {
 			sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
 			sqlite3_bind_int(st, 2, (int)limit);
 			while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
 				char tmp[64];
 				const char *scope =
 				    (const char *)sqlite3_column_text(st, 1);
-				const char *rq =
+				const char *sv =
 				    (const char *)sqlite3_column_text(st, 3);
-				const char *ev =
+				const char *rq =
 				    (const char *)sqlite3_column_text(st, 4);
+				const char *ev =
+				    (const char *)sqlite3_column_text(st, 5);
 				const char *at =
-				    (const char *)sqlite3_column_text(st, 8);
+				    (const char *)sqlite3_column_text(st, 9);
 				snprintf(tmp, sizeof tmp, "[%lld] ",
 				         (long long)sqlite3_column_int64(st, 0));
 				gbuf_adds(text, "  ");
 				gbuf_adds(text, tmp);
 				sb_cell(text, st, 2);
-				gbuf_adds(text, " (");
+				gbuf_adds(text, " [");
+				gbuf_adds(text, (sv && sv[0]) ? sv : "unrated");
+				gbuf_adds(text, "] (");
 				gbuf_adds(text, (scope && scope[0]) ? scope : "tree-wide");
 				gbuf_adds(text, "): ");
 				if (rq)
@@ -5660,13 +5854,24 @@ static int t_foresight(jv *args, gbuf *text, int *is_error, char *err, size_t er
 					gbuf_addch(text, '\n');
 				}
 				gbuf_adds(text, "    by ");
-				sb_cell(text, st, 5);
+				sb_cell(text, st, 6);
 				gbuf_adds(text, " at ");
 				if (at)
 					gbuf_adds(text, at);
 				else
 					gbuf_adds(text, "-");
 				gbuf_addch(text, '\n');
+				if (incret) {
+					const char *rs =
+					    (const char *)sqlite3_column_text(st, 12);
+					const char *rr =
+					    (const char *)sqlite3_column_text(st, 13);
+					if (rs && strcmp(rs, "retired") == 0) {
+						gbuf_adds(text, "    retired: ");
+						gbuf_adds(text, (rr && rr[0]) ? rr : "-");
+						gbuf_addch(text, '\n');
+					}
+				}
 				shown++;
 			}
 		}
@@ -5684,6 +5889,60 @@ static int t_foresight(jv *args, gbuf *text, int *is_error, char *err, size_t er
 			return -1;
 		return 0;
 	}
+}
+
+/* Applicable foresight lines for a package, blockers first, terse
+ * single lines for queue/status output (full detail lives in
+ * foresight check). Read-only and display-only: never gates, never
+ * fails the caller. Silent when nothing applies. */
+static void fore_checklist(const char *pkg, gbuf *text) {
+	sqlite3 *jdb = NULL;
+	sqlite3_stmt *st = NULL;
+	char dberr[256];
+	int n = 0;
+	char tmp[96];
+	if (!pkg || !pkg[0])
+		return;
+	jdb = db_open_notes(dberr, sizeof dberr);
+	if (!jdb)
+		return;
+	if (sqlite3_prepare_v2(jdb,
+	    "SELECT id,polarity,severity,package,requirement"
+	    " FROM requirements WHERE (package=?1 OR package='') AND status='active'"
+	    " ORDER BY CASE severity WHEN 'blocker' THEN 0"
+	    " WHEN 'advisory' THEN 1 ELSE 2 END, id DESC LIMIT 6",
+	    -1, &st, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+		while (sqlite3_step(st) == SQLITE_ROW && n < 5) {
+			const char *pol =
+			    (const char *)sqlite3_column_text(st, 1);
+			const char *sv =
+			    (const char *)sqlite3_column_text(st, 2);
+			const char *scope =
+			    (const char *)sqlite3_column_text(st, 3);
+			const char *rq =
+			    (const char *)sqlite3_column_text(st, 4);
+			if (!n)
+				gbuf_adds(text, "foresight (blockers first; check foresight for detail):\n");
+			snprintf(tmp, sizeof tmp, "  [%lld] ",
+			         (long long)sqlite3_column_int64(st, 0));
+			gbuf_adds(text, tmp);
+			gbuf_adds(text, (pol && pol[0]) ? pol : "?");
+			gbuf_adds(text, " [");
+			gbuf_adds(text, (sv && sv[0]) ? sv : "unrated");
+			gbuf_adds(text, "] (");
+			gbuf_adds(text, (scope && scope[0]) ? scope : "tree-wide");
+			gbuf_adds(text, "): ");
+			if (rq)
+				shorten_to(text, rq);
+			gbuf_addch(text, '\n');
+			n++;
+		}
+		if (n == 5 && sqlite3_step(st) == SQLITE_ROW)
+			gbuf_adds(text, "  (+more; check foresight for the rest)\n");
+	}
+	sqlite3_finalize(st);
+	sqlite3_close(jdb);
 }
 
 /* ------------------------------------------------------------------ */
@@ -5722,7 +5981,7 @@ static const struct {
 	{ "checkpoint_close", "{\"name\":\"checkpoint_close\",\"description\":\"Retire a finished checkpoint preserving history.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"number\"}},\"required\":[\"id\"]}}" },
 	{ "total_recall", "{\"name\":\"total_recall\",\"description\":\"Search journal history by query or timeline.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"query\",\"timeline\",\"export\"]},\"query\":{\"type\":\"string\"},\"session_id\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"project\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"},\"hostname\":{\"type\":\"string\"},\"username\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\",\"enum\":[\"summary\",\"full\"]},\"budget\":{\"type\":\"string\",\"enum\":[\"compact\",\"standard\",\"extended\",\"deep\"]},\"limit\":{\"type\":\"number\"},\"cursor\":{\"type\":\"string\"}}}}" },
 	{ "obligations", "{\"name\":\"obligations\",\"description\":\"Show outstanding builder work needing attention.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"}}}}" },
-	{ "foresight", "{\"name\":\"foresight\",\"description\":\"Record and consult build requirements before building.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"record\",\"check\"]},\"package\":{\"type\":\"string\"},\"polarity\":{\"type\":\"string\",\"enum\":[\"do\",\"do-not\"]},\"requirement\":{\"type\":\"string\"},\"evidence\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"}},\"required\":[\"mode\"]}}" },
+	{ "foresight", "{\"name\":\"foresight\",\"description\":\"Record and consult build requirements before building.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"record\",\"check\",\"retire\"]},\"package\":{\"type\":\"string\"},\"polarity\":{\"type\":\"string\",\"enum\":[\"do\",\"do-not\"]},\"severity\":{\"type\":\"string\",\"enum\":[\"blocker\",\"advisory\"]},\"requirement\":{\"type\":\"string\"},\"evidence\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"},\"id\":{\"type\":\"number\"},\"reason\":{\"type\":\"string\"},\"include_retired\":{\"type\":\"boolean\"}},\"required\":[\"mode\"]}}" },
 };
 #define NBASE (int)(sizeof base_tools / sizeof base_tools[0])
 

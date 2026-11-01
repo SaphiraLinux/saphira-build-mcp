@@ -95,10 +95,12 @@ static const char *notes_schema_sql =
      * future build must (or must not) do. */
     "CREATE TABLE IF NOT EXISTS requirements("
     "id INTEGER PRIMARY KEY,package TEXT NOT NULL DEFAULT '',"
-    "polarity TEXT NOT NULL,requirement TEXT NOT NULL,"
+    "polarity TEXT NOT NULL,severity TEXT,requirement TEXT NOT NULL,"
     "evidence TEXT NOT NULL DEFAULT '',"
     "author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',"
-    "recipe_commit TEXT,created_at TEXT NOT NULL," PROV_COLS ");"
+    "recipe_commit TEXT,created_at TEXT NOT NULL,"
+    "status TEXT NOT NULL DEFAULT 'active',retired_reason TEXT,"
+    PROV_COLS ");"
     "CREATE INDEX IF NOT EXISTS idx_requirements_pkg ON requirements(package,id);"
     /* Phase-2 seam: the session-event journal exists from the start
      * (empty until a writer lands) so transcript capture later plugs
@@ -150,6 +152,60 @@ static void ensure_checkpoints_v2(sqlite3 *db) {
 		st = NULL;
 		if (!found)
 			sqlite3_exec(db, checkpoint_v2_add[i], NULL, NULL, NULL);
+	}
+}
+
+/* Requirements severity (post-creation): the severity column did
+ * not exist in the first requirements tables. Pre-column rows read
+ * back NULL and display as unrated — never silently defaulted. */
+static void ensure_requirements_sev(sqlite3 *db) {
+	sqlite3_stmt *st = NULL;
+	int found = 0;
+	if (sqlite3_prepare_v2(db, "PRAGMA table_info(requirements)",
+	    -1, &st, NULL) != SQLITE_OK)
+		return;
+	while (sqlite3_step(st) == SQLITE_ROW) {
+		const unsigned char *n = sqlite3_column_text(st, 1);
+		if (n && strcmp((const char *)n, "severity") == 0) {
+			found = 1;
+			break;
+		}
+	}
+	sqlite3_finalize(st);
+	if (!found)
+		sqlite3_exec(db,
+		    "ALTER TABLE requirements ADD COLUMN severity TEXT",
+		    NULL, NULL, NULL);
+}
+
+/* Requirements retirement (post-creation): status plus the reason
+ * it was withdrawn. Rows stay active until deliberately retired —
+ * never expiring by age. Pre-column rows read back active with no
+ * reason (the ADD COLUMN defaults say so). */
+static void ensure_requirements_retire(sqlite3 *db) {
+	const char *cols[] = { "status", "retired_reason", NULL };
+	const char *adds[] = {
+		"ALTER TABLE requirements ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+		"ALTER TABLE requirements ADD COLUMN retired_reason TEXT",
+		NULL
+	};
+	int i;
+	for (i = 0; cols[i]; i++) {
+		sqlite3_stmt *st = NULL;
+		int found = 0;
+		if (sqlite3_prepare_v2(db, "PRAGMA table_info(requirements)",
+		    -1, &st, NULL) != SQLITE_OK)
+			return;
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			const unsigned char *n = sqlite3_column_text(st, 1);
+			if (n && strcmp((const char *)n, cols[i]) == 0) {
+				found = 1;
+				break;
+			}
+		}
+		sqlite3_finalize(st);
+		if (!found)
+			sqlite3_exec(db, adds[i], NULL, NULL, NULL);
 	}
 }
 
@@ -356,6 +412,8 @@ sqlite3 *db_open_notes(char *err, size_t errsz) {
 	}
 	ensure_checkpoints_v2(db);
 	ensure_provenance_v3(db);
+	ensure_requirements_sev(db);
+	ensure_requirements_retire(db);
 	ensure_fts(db);
 	return db;
 }

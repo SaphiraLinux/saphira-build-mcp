@@ -241,30 +241,44 @@ curl -s localhost:8473/call -d '{"tool":"obligations","arguments":{"package":"lv
 
 ## `foresight` — JOURNAL · READ-ONLY + JOURNAL-WRITE
 
-Record and consult build requirements before building. Two modes:
+Record and consult build requirements before building. Three modes:
 `record` stores one focused do / do-not requirement (package-scoped,
 or tree-wide when `package` is absent); `check` lists what applies
-to a package, tree-wide rows included. Append-only: corrections are
-new rows, newest first. This is not a lessons store: lessons
-preserve what was learned, requirements state what a future build
-must (or must not) do.
+to a package, tree-wide rows included, blockers first; `retire`
+withdraws a wrong, duplicated or superseded row (reason required,
+history preserved, excluded from normal checks). Append-only:
+corrections are new rows, newest first — nothing is ever deleted,
+and rows stay active until deliberately retired, never expiring by
+age. This is not a lessons store: lessons preserve what was learned,
+requirements state what a future build must (or must not) do.
+
+Norms that keep the store useful: check before you record (a
+duplicate means the store already worked); one focused sentence per
+requirement, with evidence pointers (note id, build id, commit) so a
+row stays checkable instead of becoming folklore. `build_request`
+and `package_build_status` surface the applicable rows automatically
+(blockers first, advisory only, never gating the build).
 
 | Param | Required | Notes |
 |---|---|---|
-| `mode` | yes | `record` or `check` |
+| `mode` | yes | `record`, `check`, or `retire` |
 | `polarity` | record only | `do` or `do-not` |
+| `severity` | record only | `blocker` (ignoring it fails the build) or `advisory` |
 | `requirement` | record only | the focused constraint, ≤1024 chars |
-| `evidence` | no | pointer to the past mistake (note id, build id, commit) |
+| `evidence` | no | pointer to the past mistake |
+| `id` | retire only | requirement row to withdraw |
+| `reason` | retire only | why it is withdrawn |
+| `include_retired` | no | check shows withdrawn rows too, marked |
 | `package` | no | scope; absent means tree-wide |
 | `limit` | no | check page size, default 20 |
 | `author`, `session_id`, `hostname`, `username`, `cwd`, `agent` | no | provenance overrides (else server-observed) |
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do-not","requirement":"never place runtime libraries under /usr/lib64","evidence":"build 5935","package":"grub"}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","severity":"blocker","polarity":"do-not","requirement":"never place runtime libraries under /usr/lib64","package":"grub"}}}
 ```
 
 ```json
-{"content":[{"type":"text","text":"recorded requirement 1 [do-not] for grub by docgen\n\n[src: ...]"}],"isError":false}
+{"content":[{"type":"text","text":"recorded requirement 1 [do-not] [blocker] for grub by docgen\n\n[src: ...]"}],"isError":false}
 ```
 
 ```json
@@ -272,7 +286,7 @@ must (or must not) do.
 ```
 
 ```json
-{"content":[{"type":"text","text":"requirements for grub (tree-wide included):\n  [2] do (tree-wide): check accounts.tsv first; a change means rebuild saphira-packager and upgrade it on the host\n  [1] do-not (grub): never place runtime libraries under /usr/lib64\n..."} }],"isError":false}
+{"content":[{"type":"text","text":"requirements for grub (tree-wide included, blockers first):\n  [1] do-not [blocker] (grub): never place runtime libraries under /usr/lib64\n..."} }],"isError":false}
 ```
 
 ```sh

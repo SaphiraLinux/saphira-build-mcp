@@ -268,7 +268,7 @@ t_contains "initialize names server" "$out" '"name":"saphira-build-mcp"'
 out=$(mcp '{"jsonrpc":"2.0","id":2,"method":"ping"}')
 t_contains "ping empty result" "$out" '"result":{}'
 out=$(mcp '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')
-for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness build_request package_bump checkpoint_save checkpoint_resume checkpoint_list checkpoint_close obligations; do
+for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness build_request package_bump checkpoint_save checkpoint_resume checkpoint_list checkpoint_close obligations foresight; do
 	t_contains "tools/list has $tool" "$out" "\"name\":\"$tool\""
 done
 out=$(mcp '{"jsonrpc":"2.0","id":4,"method":"nope"}')
@@ -1027,23 +1027,78 @@ t_contains "tool intros 5-10 words" "$out" "bad: none"
 # --- foresight: record + consult build requirements --------------------
 out=$(mcp '{"jsonrpc":"2.0","id":399,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-a"}}}')
 t_contains "foresight empty check honest" "$out" '(no recorded requirements'
-out=$(mcp '{"jsonrpc":"2.0","id":400,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do-not","requirement":"never place runtime libraries under /usr/lib64","evidence":"build 5935","package":"pkg-a"}}}')
-t_contains "foresight record scoped" "$out" "recorded requirement 1 [do-not] for pkg-a"
-out=$(mcp '{"jsonrpc":"2.0","id":401,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do","requirement":"check accounts.tsv first"}}}')
-t_contains "foresight record tree-wide" "$out" "recorded requirement 2 [do] for tree-wide"
+out=$(mcp '{"jsonrpc":"2.0","id":400,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do-not","severity":"blocker","requirement":"never place runtime libraries under /usr/lib64","evidence":"build 5935","package":"pkg-a"}}}')
+t_contains "foresight record scoped" "$out" "recorded requirement 1 [do-not] [blocker] for pkg-a"
+out=$(mcp '{"jsonrpc":"2.0","id":401,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do","severity":"advisory","requirement":"check accounts.tsv first"}}}')
+t_contains "foresight record tree-wide" "$out" "recorded requirement 2 [do] [advisory] for tree-wide"
 out=$(mcp '{"jsonrpc":"2.0","id":402,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-a"}}}')
-t_contains "foresight check scoped" "$out" '[1] do-not (pkg-a)'
-t_contains "foresight check includes tree-wide" "$out" '[2] do (tree-wide)'
+t_contains "foresight check scoped" "$out" '[1] do-not [blocker] (pkg-a)'
+t_contains "foresight check includes tree-wide" "$out" '[2] do [advisory] (tree-wide)'
 t_contains "foresight check evidence" "$out" 'evidence: build 5935'
 out=$(mcp '{"jsonrpc":"2.0","id":403,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-b"}}}')
-t_contains "foresight check other package tree-wide" "$out" '[2] do (tree-wide)'
-t_not_contains "foresight check excludes scoped" "$out" '[1] do-not (pkg-a)'
-out=$(mcp '{"jsonrpc":"2.0","id":404,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"maybe","requirement":"x"}}}')
+t_contains "foresight check other package tree-wide" "$out" '[2] do [advisory] (tree-wide)'
+t_not_contains "foresight check excludes scoped" "$out" '[1] do-not [blocker] (pkg-a)'
+out=$(mcp '{"jsonrpc":"2.0","id":404,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"maybe","severity":"blocker","requirement":"x"}}}')
 t_contains "foresight bad polarity rejected" "$out" '"code":-32602'
-out=$(mcp '{"jsonrpc":"2.0","id":405,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do"}}}')
+out=$(mcp '{"jsonrpc":"2.0","id":405,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do","severity":"blocker"}}}')
 t_contains "foresight missing requirement rejected" "$out" '"code":-32602'
 out=$(mcp '{"jsonrpc":"2.0","id":406,"method":"tools/call","params":{"name":"foresight","arguments":{}}}')
 t_contains "foresight missing mode rejected" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":407,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do","requirement":"x"}}}')
+t_contains "foresight missing severity rejected" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":408,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do","severity":"urgent","requirement":"x"}}}')
+t_contains "foresight bad severity rejected" "$out" '"code":-32602'
+# blockers sort before advisories regardless of record order.
+out=$(mcp '{"jsonrpc":"2.0","id":409,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do","severity":"advisory","requirement":"polish the summary output","package":"pkg-sort"}}}')
+t_contains "foresight sort advisory recorded" "$out" "recorded requirement 3 [do] [advisory] for pkg-sort"
+out=$(mcp '{"jsonrpc":"2.0","id":410,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do-not","severity":"blocker","requirement":"never ship generated files","package":"pkg-sort"}}}')
+t_contains "foresight sort blocker recorded" "$out" "recorded requirement 4 [do-not] [blocker] for pkg-sort"
+out=$(mcp '{"jsonrpc":"2.0","id":411,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-sort"}}}')
+t "foresight blockers sort first" "0" "$(printf '%s' "$out" | python3 -c "import sys; t=sys.stdin.read(); print('ok' if '[blocker]' in t and '[advisory]' in t and t.find('[blocker]') < t.find('[advisory]') else 'BAD')")" "ok"
+# near-duplicate hint: same two significant words as requirement 1.
+out=$(mcp '{"jsonrpc":"2.0","id":412,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do-not","severity":"blocker","requirement":"never place runtime objects under /usr/lib32","package":"pkg-a"}}}')
+t_contains "foresight hint appears" "$out" "similar existing"
+t_contains "foresight hint names row" "$out" "[1] do-not [blocker] (pkg-a)"
+# retire: reason-required, history preserved, excluded from checks.
+out=$(mcp '{"jsonrpc":"2.0","id":413,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do","severity":"blocker","requirement":"temporary rule","package":"pkg-rt"}}}')
+t_contains "foresight retire target recorded" "$out" "recorded requirement 6 [do] [blocker] for pkg-rt"
+out=$(mcp '{"jsonrpc":"2.0","id":414,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"retire","id":6,"reason":"superseded"}}}')
+t_contains "foresight retire confirms" "$out" "retired requirement 6"
+t_contains "foresight retire keeps reason" "$out" "reason: superseded"
+out=$(mcp '{"jsonrpc":"2.0","id":415,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-rt"}}}')
+t_not_contains "foresight retired excluded" "$out" "[6] do [blocker]"
+t_contains "foresight retired keeps tree-wide" "$out" "[2] do [advisory] (tree-wide)"
+out=$(mcp '{"jsonrpc":"2.0","id":416,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-rt","include_retired":true}}}')
+t_contains "foresight retired visible on request" "$out" "[6] do [blocker] (pkg-rt)"
+t_contains "foresight retired shows reason" "$out" "retired: superseded"
+out=$(mcp '{"jsonrpc":"2.0","id":417,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"retire","id":6,"reason":"again"}}}')
+t_contains "foresight double retire isError" "$out" '"isError":true'
+t_contains "foresight double retire message" "$out" 'unknown or already retired'
+out=$(mcp '{"jsonrpc":"2.0","id":418,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"retire","id":999,"reason":"x"}}}')
+t_contains "foresight unknown id isError" "$out" '"isError":true'
+out=$(mcp '{"jsonrpc":"2.0","id":419,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"retire","id":4}}}')
+t_contains "foresight missing reason rejected" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":420,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"retire","reason":"x"}}}')
+t_contains "foresight missing id rejected" "$out" '"code":-32602'
+# pre-severity rows read back unrated, never silently defaulted.
+sqlite3 "$FIX/notes.db" "INSERT INTO requirements(package,polarity,severity,requirement,evidence,author,recorder,created_at,status) VALUES('pkg-unrated','do',NULL,'legacy row without severity','','t','test','2026-01-01T00:00:00Z','active');"
+out=$(mcp '{"jsonrpc":"2.0","id":421,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-unrated"}}}')
+t_contains "foresight unrated shown" "$out" '[unrated]'
+# legacy database without the newer columns migrates on open.
+LEGACY=$ROOT/legacy-req.db
+sqlite3 "$LEGACY" "CREATE TABLE requirements(id INTEGER PRIMARY KEY,package TEXT NOT NULL DEFAULT '',polarity TEXT NOT NULL,requirement TEXT NOT NULL,evidence TEXT NOT NULL DEFAULT '',author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',recipe_commit TEXT,created_at TEXT NOT NULL,session_id TEXT,hostname TEXT,username TEXT,cwd TEXT,agent TEXT,ctx_origin TEXT); INSERT INTO requirements(package,polarity,requirement,author,recorder,created_at) VALUES('pkg-leg','do-not','old row','t','test','2026-01-01T00:00:00Z');"
+out=$(SBM_NOTES_DB="$LEGACY" mcp '{"jsonrpc":"2.0","id":422,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-leg"}}}')
+t_contains "legacy requirements migrate" "$out" '[unrated]'
+t_contains "legacy row readable" "$out" 'old row'
+# reader: applicable foresights surface on queue and status.
+out=$(mcp '{"jsonrpc":"2.0","id":430,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a","reason":"reader probe"}}}')
+t_contains "build request shows foresight" "$out" "foresight (blockers first"
+t_contains "build request shows blocker text" "$out" "do-not [blocker]"
+out=$(mcp '{"jsonrpc":"2.0","id":431,"method":"tools/call","params":{"name":"package_build_status","arguments":{"name":"pkg-a"}}}')
+t_contains "build status shows foresight" "$out" "foresight (blockers first"
+EMPTYJ=$ROOT/empty-req.db
+out=$(SBM_NOTES_DB="$EMPTYJ" mcp '{"jsonrpc":"2.0","id":432,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a","reason":"silent reader probe"}}}')
+t_not_contains "reader silent when none apply" "$out" "foresight (blockers first"
 
 # --- framing: every stdout line is valid JSON ---------------------------
 mcp '{"jsonrpc":"2.0","id":30,"method":"tools/list"}' '{"jsonrpc":"2.0","id":31,"method":"ping"}' > "$ROOT/frames.txt"
