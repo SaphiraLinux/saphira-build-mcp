@@ -753,8 +753,79 @@ t_contains "ext loud truncated" "$out" '[truncated]'
 t_contains "ext loud no error" "$out" '"isError":false'
 t "ext audit ok row" "$(sqlite3 "$FIX/notes.db" "SELECT COUNT(*) FROM tool_runs WHERE tool='ext_ok' AND exit_status=0;")" "1" "1"
 t "ext audit timeout row" "$(sqlite3 "$FIX/notes.db" "SELECT COUNT(*) FROM tool_runs WHERE tool='ext_slow' AND timed_out=1;")" "1" "1"
-# malformed or unsafe conf: extensions (and expose-offs) disabled,
-# built-ins unaffected. one bad file per case.
+# --- ask class, lockdown_ssh, per-line isolation ----------------------
+cat > "$FIX/bin/ext-ask.sh" <<EOF
+#!/bin/sh
+printf 'asked:'
+cat
+printf '\n'
+EOF
+chmod +x "$FIX/bin/ext-ask.sh"
+cat > "$FIX/bin/ext-stdin.sh" <<EOF
+#!/bin/sh
+if read line <&0; then
+  echo "stdin-had-data"
+else
+  echo "stdin-eof"
+fi
+EOF
+chmod +x "$FIX/bin/ext-stdin.sh"
+cat > "$FIX/bin/ssh" <<EOF
+#!/bin/sh
+echo "fake-ssh ran (fixture)"
+EOF
+chmod +x "$FIX/bin/ssh"
+# default lockdown: ssh refused, unrelated tools keep working.
+printf 'tool ext_ssh %s read 10 100 off %s --\ntool ext_q2 %s read 10 100 off %s --\n' "$FIX/bin/ssh" "$FIX" "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-lock.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-lock.conf" mcp '{"jsonrpc":"2.0","id":230,"method":"tools/list"}')
+t_not_contains "lockdown drops ssh tool" "$out" '"name":"ext_ssh"'
+t_contains "lockdown keeps sibling tool" "$out" '"name":"ext_q2"'
+t_contains "lockdown keeps builtins" "$out" '"name":"package_search"'
+out=$(SBM_TOOLS_CONF="$FIX/ext-lock.conf" mcp '{"jsonrpc":"2.0","id":231,"method":"tools/call","params":{"name":"ext_q2","arguments":{}}}')
+t_contains "lockdown sibling runs" "$out" 'ext-ok args:'
+# operator opt-out: lockdown_ssh false permits the ssh executable.
+printf 'lockdown_ssh false\ntool ext_ssh %s read 10 100 off %s --\n' "$FIX/bin/ssh" "$FIX" > "$FIX/ext-nolock.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-nolock.conf" mcp '{"jsonrpc":"2.0","id":232,"method":"tools/list"}')
+t_contains "nolock lists ssh tool" "$out" '"name":"ext_ssh"'
+out=$(SBM_TOOLS_CONF="$FIX/ext-nolock.conf" mcp '{"jsonrpc":"2.0","id":233,"method":"tools/call","params":{"name":"ext_ssh","arguments":{}}}')
+t_contains "nolock ssh runs fixed argv" "$out" 'fake-ssh ran (fixture)'
+# the lockdown line applies wherever it sits (pre-scan, not order).
+printf 'tool ext_ssh %s read 10 100 off %s --\nlockdown_ssh false\n' "$FIX/bin/ssh" "$FIX" > "$FIX/ext-nolock-after.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-nolock-after.conf" mcp '{"jsonrpc":"2.0","id":234,"method":"tools/list"}')
+t_contains "nolock after tool line works" "$out" '"name":"ext_ssh"'
+# invalid lockdown value: fail closed toward refuse.
+printf 'lockdown_ssh maybe\ntool ext_ssh %s read 10 100 off %s --\n' "$FIX/bin/ssh" "$FIX" > "$FIX/ext-lockbad.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-lockbad.conf" mcp '{"jsonrpc":"2.0","id":235,"method":"tools/list"}')
+t_not_contains "bad lockdown stays locked" "$out" '"name":"ext_ssh"'
+# ask delivery: prompt on a dedicated stdin pipe, EOF after writing.
+printf 'tool ext_ask %s ask 10 65536 off %s --\n' "$FIX/bin/ext-ask.sh" "$FIX" > "$FIX/ext-ask.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-ask.conf" mcp '{"jsonrpc":"2.0","id":236,"method":"tools/list"}')
+t_contains "ask lists with prompt schema" "$out" '"required":["prompt"]'
+t_contains "ask describes stdin" "$out" 'External (ask):'
+out=$(SBM_TOOLS_CONF="$FIX/ext-ask.conf" mcp '{"jsonrpc":"2.0","id":237,"method":"tools/call","params":{"name":"ext_ask","arguments":{"prompt":"hello-qwen"}}}')
+t_contains "ask delivers prompt" "$out" 'asked:hello-qwen'
+t_contains "ask exit 0" "$out" '[exit=0'
+t_contains "ask no error" "$out" '"isError":false'
+t "ask audit stdin marker" "$(sqlite3 "$FIX/notes.db" "SELECT COUNT(*) FROM tool_runs WHERE tool='ext_ask' AND argv LIKE '%<stdin:10 bytes>%';")" "1" "1"
+out=$(SBM_TOOLS_CONF="$FIX/ext-ask.conf" mcp '{"jsonrpc":"2.0","id":238,"method":"tools/call","params":{"name":"ext_ask","arguments":{}}}')
+t_contains "ask missing prompt isError" "$out" '"isError":true'
+t_contains "ask missing prompt message" "$out" 'prompt required'
+out=$(SBM_TOOLS_CONF="$FIX/ext-ask.conf" mcp '{"jsonrpc":"2.0","id":239,"method":"tools/call","params":{"name":"ext_ask","arguments":{"prompt":5}}}')
+t_contains "ask wrong-type prompt rejected" "$out" '"code":-32602'
+# read tools get /dev/null stdin: nothing can consume the session.
+printf 'tool ext_stdin %s read 10 65536 off %s --\n' "$FIX/bin/ext-stdin.sh" "$FIX" > "$FIX/ext-stdin.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-stdin.conf" mcp '{"jsonrpc":"2.0","id":240,"method":"tools/call","params":{"name":"ext_stdin","arguments":{}}}')
+t_contains "ext stdin is eof" "$out" 'stdin-eof'
+# one bad line no longer disables unrelated working tools.
+printf 'tool badmeta %s read 10 100 off %s -- %s\ntool ext_q3 %s read 10 100 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" 'a;b' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-isolate.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-isolate.conf" mcp '{"jsonrpc":"2.0","id":241,"method":"tools/list"}')
+t_not_contains "isolate drops bad line" "$out" '"name":"badmeta"'
+t_contains "isolate keeps sibling" "$out" '"name":"ext_q3"'
+t_contains "isolate keeps builtins" "$out" '"name":"package_search"'
+printf 'expose nosuchtool off\ntool ext_q4 %s read 10 100 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-isolate-expose.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-isolate-expose.conf" mcp '{"jsonrpc":"2.0","id":242,"method":"tools/list"}')
+t_contains "isolate expose keeps builtin" "$out" '"name":"package_search"'
+t_contains "isolate expose keeps sibling" "$out" '"name":"ext_q4"'
 printf 'expose package_search off\ntool ext_q %s read 10 100 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-off.conf"
 out=$(SBM_TOOLS_CONF="$FIX/ext-off.conf" mcp '{"jsonrpc":"2.0","id":210,"method":"tools/list"}')
 t_not_contains "ext off omitted" "$out" '"name":"package_search"'
@@ -764,7 +835,8 @@ t_contains "ext off call unknown" "$out" '"code":-32602'
 printf 'expose checkpoint_list off\ntool ext_q %s read 10 100 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-badckpt.conf"
 out=$(SBM_TOOLS_CONF="$FIX/ext-badckpt.conf" mcp '{"jsonrpc":"2.0","id":212,"method":"tools/list"}')
 t_contains "ext checkpoint forced on" "$out" '"name":"checkpoint_list"'
-t_not_contains "ext bad conf no ext" "$out" 'External ('
+# per-line isolation: the refused expose drops, the sibling loads.
+t_contains "ext bad expose keeps sibling" "$out" '"name":"ext_q"'
 printf 'expose nosuchtool off\n' > "$FIX/ext-badexpose.conf"
 out=$(SBM_TOOLS_CONF="$FIX/ext-badexpose.conf" mcp '{"jsonrpc":"2.0","id":213,"method":"tools/list"}')
 t_contains "ext unknown expose ignored" "$out" '"name":"package_search"'

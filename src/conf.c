@@ -64,13 +64,51 @@ int build_mode(void) {
 	return -1;
 }
 
-static void conf_fail(ext_conf *c, int lineno, const char *why) {
-	c->ok = 0;
-	c->ntools = 0;
-	c->noff = 0;
-	/* Line number included: a rejected conf must say which line
-	 * failed. Precision-bounded so the error always fits. */
-	snprintf(c->err, sizeof c->err, "line %d: %.220s", lineno, why);
+/* One rejected line: skipped without harming the rest. The first
+ * reason is kept for diagnostics; the count says how many lines
+ * fell out. Extensions parsed from good lines keep working. */
+static void conf_skip(ext_conf *c, int lineno, const char *why) {
+	c->nskipped++;
+	if (!c->err[0])
+		snprintf(c->err, sizeof c->err, "line %d: %.220s", lineno, why);
+}
+
+/* Pre-scan for the operator's SSH policy before the main parse, so
+ * a lockdown_ssh line applies no matter where it sits in the file.
+ * The last valid setting wins; absent or invalid means lockdown on
+ * (refuse). Fail-closed toward refusal, never toward permission. */
+static int scan_lockdown(const char *path) {
+	FILE *f;
+	char line[CONF_MAX_LINE];
+	int lockdown = 1;
+	f = fopen(path, "r");
+	if (!f)
+		return 1;
+	while (fgets(line, sizeof line, f)) {
+		char *p = line, *v, *hash;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p == '#' || *p == '\n' || *p == 0)
+			continue;
+		hash = strchr(p, '#');
+		if (hash && (hash == p || hash[-1] == ' ' || hash[-1] == '\t'))
+			*hash = 0;
+		if (strncmp(p, "lockdown_ssh", 12) != 0 ||
+		    (p[12] != ' ' && p[12] != '\t' && p[12] != '\n'))
+			continue;
+		v = p + 12;
+		while (*v == ' ' || *v == '\t')
+			v++;
+		if (strcmp(v, "true\n") == 0 || strcmp(v, "on\n") == 0 ||
+		    strcmp(v, "true") == 0 || strcmp(v, "on") == 0)
+			lockdown = 1;
+		else if (strcmp(v, "false\n") == 0 || strcmp(v, "off\n") == 0 ||
+		    strcmp(v, "false") == 0 || strcmp(v, "off") == 0)
+			lockdown = 0;
+		/* Anything else is not a valid setting: keep current. */
+	}
+	fclose(f);
+	return lockdown;
 }
 
 void conf_free(ext_conf *c) {
@@ -110,6 +148,15 @@ static int has_dotdot(const char *s) {
 			return 1;
 	}
 	return 0;
+}
+
+/* Basename is exactly ssh: the one executable lockdown_ssh
+ * governs. sshd/scp and every other network tool stay denied
+ * unconditionally. */
+static int is_ssh_exe(const char *exe) {
+	const char *b = strrchr(exe, '/');
+	b = b ? b + 1 : exe;
+	return strcmp(b, "ssh") == 0;
 }
 
 static int denied_exe(const char *exe) {
@@ -185,6 +232,9 @@ void conf_load(ext_conf *c) {
 
 	memset(c, 0, sizeof *c);
 	c->ok = 1;
+	/* Operator SSH policy first: the pre-scan finds the last valid
+	 * lockdown_ssh setting wherever it sits, defaulting to refuse. */
+	c->lockdown_ssh = scan_lockdown(path);
 	f = fopen(path, "r");
 	if (!f) {
 		/* Absent or unreadable: built-ins only, today's
@@ -199,9 +249,13 @@ void conf_load(ext_conf *c) {
 		ext_tool *t;
 		lineno++;
 		if (!strchr(line, '\n') && !feof(f)) {
-			fclose(f);
-			conf_fail(c, lineno, "line too long");
-			return;
+			int ch;
+			conf_skip(c, lineno, "line too long");
+			/* Drain the remainder so the tail cannot parse
+			 * as a new line. */
+			while ((ch = fgetc(f)) != '\n' && ch != EOF)
+				;
+			continue;
 		}
 		/* Comment: # at start or after whitespace ends the line. */
 		hash = strchr(line, '#');
@@ -210,44 +264,51 @@ void conf_load(ext_conf *c) {
 			*hash = 0;
 		n = split(line, toks, (int)(sizeof toks / sizeof toks[0]));
 		if (n < 0) {
-			fclose(f);
-			conf_fail(c, lineno, "too many tokens");
-			return;
+			conf_skip(c, lineno, "too many tokens");
+			continue;
 		}
 		if (n == 0)
 			continue;
 		if (strcmp(toks[0], "expose") == 0) {
 			if (n != 3 || (strcmp(toks[2], "on") != 0 &&
 			    strcmp(toks[2], "off") != 0)) {
-				fclose(f);
-				conf_fail(c, lineno, "bad expose line");
-				return;
+				conf_skip(c, lineno, "bad expose line");
+				continue;
 			}
 			if (has_metachars(toks[1])) {
-				fclose(f);
-				conf_fail(c, lineno, "bad expose name");
-				return;
+				conf_skip(c, lineno, "bad expose name");
+				continue;
 			}
 			if (strcmp(toks[2], "off") == 0) {
 				if (c->noff >= (int)(sizeof c->off / sizeof c->off[0])) {
-					fclose(f);
-					conf_fail(c, lineno, "too many expose lines");
-					return;
+					conf_skip(c, lineno, "too many expose lines");
+					continue;
 				}
 				c->off[c->noff] = strdup(toks[1]);
 				if (!c->off[c->noff]) {
-					fclose(f);
-					conf_fail(c, lineno, "out of memory");
-					return;
+					conf_skip(c, lineno, "out of memory");
+					continue;
 				}
 				c->noff++;
 			}
 			continue;
 		}
+		if (strcmp(toks[0], "lockdown_ssh") == 0) {
+			/* Policy already applied by the pre-scan; accept a
+			 * well-formed line so a valid setting is not
+			 * counted as a skip. */
+			if (n != 2 || (strcmp(toks[1], "true") != 0 &&
+			    strcmp(toks[1], "false") != 0 &&
+			    strcmp(toks[1], "on") != 0 &&
+			    strcmp(toks[1], "off") != 0)) {
+				conf_skip(c, lineno, "bad lockdown_ssh line");
+				continue;
+			}
+			continue;
+		}
 		if (strcmp(toks[0], "tool") != 0) {
-			fclose(f);
-			conf_fail(c, lineno, "unknown directive");
-			return;
+			conf_skip(c, lineno, "unknown directive");
+			continue;
 		}
 		/* tool name exe class timeout maxbytes sandbox dir -- args */
 		dash = -1;
@@ -258,58 +319,57 @@ void conf_load(ext_conf *c) {
 			}
 		}
 		if (dash != 8) {
-			fclose(f);
-			conf_fail(c, lineno, "bad tool line shape");
-			return;
+			conf_skip(c, lineno, "bad tool line shape");
+			continue;
 		}
 		if (!valid_name(toks[1]) || toks[2][0] != '/' ||
 		    has_dotdot(toks[2]) ||
-		    (strcmp(toks[3], "read") != 0 && strcmp(toks[3], "test") != 0) ||
+		    (strcmp(toks[3], "read") != 0 && strcmp(toks[3], "test") != 0 &&
+		     strcmp(toks[3], "ask") != 0) ||
 		    (strcmp(toks[6], "on") != 0 && strcmp(toks[6], "off") != 0) ||
 		    toks[7][0] != '/' || has_dotdot(toks[7])) {
-			fclose(f);
-			conf_fail(c, lineno, "bad tool fields");
-			return;
+			conf_skip(c, lineno, "bad tool fields");
+			continue;
 		}
-		if (denied_exe(toks[2]) || denied_state(toks[2]) ||
+		/* ssh is refused while lockdown_ssh holds (the default);
+		 * with the operator's explicit false it runs through the
+		 * same fixed-argv, timeout, audit and sandbox interface.
+		 * Everything else about the denylist is unchanged. */
+		if ((denied_exe(toks[2]) &&
+		     (c->lockdown_ssh || !is_ssh_exe(toks[2]))) ||
+		    denied_state(toks[2]) ||
 		    denied_state(toks[7]) || has_metachars(toks[2]) ||
 		    has_metachars(toks[7])) {
-			fclose(f);
-			conf_fail(c, lineno, "tool path refused");
-			return;
+			conf_skip(c, lineno, "tool path refused");
+			continue;
 		}
 		{
 			char *end = NULL;
 			long to = strtol(toks[4], &end, 10);
 			long mb;
 			if (!end || *end || to < 1 || to > 3600) {
-				fclose(f);
-				conf_fail(c, lineno, "bad timeout");
-				return;
+				conf_skip(c, lineno, "bad timeout");
+				continue;
 			}
 			end = NULL;
 			mb = strtol(toks[5], &end, 10);
 			if (!end || *end || mb < 1 || mb > 1048576) {
-				fclose(f);
-				conf_fail(c, lineno, "bad max-bytes");
-				return;
+				conf_skip(c, lineno, "bad max-bytes");
+				continue;
 			}
 			if (c->ntools >= CONF_MAX_TOOLS) {
-				fclose(f);
-				conf_fail(c, lineno, "too many tools");
-				return;
+				conf_skip(c, lineno, "too many tools");
+				continue;
 			}
 			if (n - dash - 1 > CONF_MAX_ARGV - 1) {
-				fclose(f);
-				conf_fail(c, lineno, "too many args");
-				return;
+				conf_skip(c, lineno, "too many args");
+				continue;
 			}
 			for (i = dash + 1; i < n; i++) {
 				if (has_metachars(toks[i]) ||
 				    denied_state(toks[i])) {
-					fclose(f);
-					conf_fail(c, lineno, "tool arg refused");
-					return;
+					conf_skip(c, lineno, "tool arg refused");
+					goto next_line;
 				}
 			}
 			t = &c->tools[c->ntools];
@@ -335,9 +395,8 @@ void conf_load(ext_conf *c) {
 				free(t->cls);
 				free(t->dir);
 				free(t->argv);
-				fclose(f);
-				conf_fail(c, lineno, "out of memory");
-				return;
+				conf_skip(c, lineno, "out of memory");
+				continue;
 			}
 			t->argv[0] = strdup(toks[2]);
 			if (!t->argv[0]) {
@@ -346,30 +405,28 @@ void conf_load(ext_conf *c) {
 				free(t->cls);
 				free(t->dir);
 				free(t->argv);
-				fclose(f);
-				conf_fail(c, lineno, "out of memory");
-				return;
+				conf_skip(c, lineno, "out of memory");
+				continue;
 			}
 			t->argc = 1;
 			for (i = dash + 1; i < n; i++) {
 				t->argv[t->argc] = strdup(toks[i]);
 				if (!t->argv[t->argc]) {
-					fclose(f);
-					conf_fail(c, lineno, "out of memory");
-					return;
+					conf_skip(c, lineno, "out of memory");
+					goto next_line;
 				}
 				t->argc++;
 			}
 			t->argv[t->argc] = NULL;
 			for (i = 0; i < c->ntools; i++) {
 				if (strcmp(c->tools[i].name, t->name) == 0) {
-					fclose(f);
-					conf_fail(c, lineno, "duplicate tool name");
-					return;
+					conf_skip(c, lineno, "duplicate tool name");
+					goto next_line;
 				}
 			}
 			c->ntools++;
 		}
+	next_line: ;
 	}
 	fclose(f);
 }

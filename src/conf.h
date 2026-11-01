@@ -4,16 +4,31 @@
 #include "core.h"
 
 /* /etc/saphira/mcp/tools.conf: extension registry plus exposure
- * allowlist. Strict line grammar, fail-closed: any malformed or unsafe
- * line disables extensions (built-ins unaffected). No shell anywhere:
+ * allowlist. Strict line grammar, fail-closed per line: a malformed
+ * or unsafe line disables only that line (skipped, counted, first
+ * error kept); unrelated entries keep working. No shell anywhere:
  * registered tools run with fixed argv via execve (see runner.c).
  *
  *   expose <builtin-name> <on|off>
- *   tool <name> <abspath> <class> <timeout-s> <max-bytes> <sandbox:on|off> <dir> -- <fixed-arg>...
+ *   lockdown_ssh <true|false>   (default true; last valid wins)
+ *   tool <name> <abspath> <class> <timeout-s> <max-bytes> <sandbox:on|off> <dir> -- <fixed args...>
  *
- * class is read or test (no write class exists). <dir> is the child
- * cwd, absolute, without "..". Everything after -- is fixed argv;
- * callers pass no arguments. */
+ * class is read, test or ask. read runs unsandboxed, test runs
+ * sandboxed; ask behaves like read for execution but additionally
+ * accepts one caller string (the MCP `prompt` argument), delivered
+ * on a dedicated stdin pipe closed with EOF after writing. No other
+ * caller input exists: the command, flags and environment stay
+ * operator-fixed. <dir> is the child cwd, absolute, without "..".
+ * Everything after -- is fixed argv.
+ *
+ * lockdown_ssh is operator-owned SSH policy, default true (refuse):
+ * while true, any tool naming an ssh executable is skipped like any
+ * other refused line. When the operator sets it false, explicitly
+ * configured ssh executables may run through the same fixed-argv,
+ * timeout, audit and sandbox interface. Nothing else about the
+ * denylist changes: shells, other network tools, the
+ * build/sign/publish/install lane and MCP-owned state stay
+ * unregistrable either way. */
 
 #define CONF_MAX_TOOLS 64
 #define CONF_MAX_ARGV 65 /* argv[0]..argv[63] plus NULL */
@@ -22,13 +37,13 @@
 typedef struct {
 	char *name;   /* [a-z][a-z0-9_]{0,31}, no builtin collision */
 	char *exe;    /* abspath of a denylisted-checked executable */
-	char *cls;    /* "read" or "test" */
+	char *cls;    /* "read", "test" or "ask" */
 	char **argv;  /* fixed argv, argv[0] is exe, NULL-terminated */
 	int argc;     /* includes argv[0], >= 1 */
 	char *dir;    /* child cwd */
 	long timeout_s;  /* 1..3600 */
 	long max_bytes;  /* 1..1048576 */
-	int sandbox;  /* test class defaults on, read defaults off */
+	int sandbox;  /* test class defaults on, read/ask default off */
 } ext_tool;
 
 typedef struct {
@@ -38,7 +53,9 @@ typedef struct {
 	int ntools;
 	int ok;         /* extensions usable (or conf absent: none) */
 	int present;    /* conf file was found and readable */
-	char err[256];  /* why extensions are disabled */
+	int lockdown_ssh; /* 1 = refuse ssh executables (default) */
+	int nskipped;   /* refused lines skipped without harming the rest */
+	char err[256];  /* first skip reason, with line number */
 } ext_conf;
 
 const char *path_tools_conf(void);

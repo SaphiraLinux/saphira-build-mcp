@@ -1,4 +1,4 @@
-# External tools: how `tools.conf` works (v0.10.8)
+# External tools: how `tools.conf` works (v0.10.12)
 
 Source of truth: `src/conf.c` (`conf_load`), `src/runner.c`, and one
 verified end-to-end run (a `codex exec review` that found a real
@@ -10,20 +10,23 @@ starting set.
 `tools.conf` registers **fixed-argv local executables** as extra MCP
 tools, and subtracts built-ins per host. It is the operator's
 extension surface: site-specific read/test commands (git porcelain,
-linters, agent CLIs) become callable tools with no code change.
+linters) and single-prompt agent CLIs become callable tools with no
+code change.
 
 - Path: `SBM_TOOLS_CONF`, default `/etc/saphira/mcp/tools.conf`.
 - **Absent or unreadable file: built-ins only**, byte-for-byte today's
   behaviour. Portable hosts need no conf at all.
-- A **malformed or unsafe line disables all extensions** (and all
-  `expose` subtractions); built-ins stay fully on. Fail-closed, never
-  half-loaded.
+- A **malformed or unsafe line is skipped** (counted; first reason
+  kept for diagnostics) while unrelated entries keep working.
+  Fail-closed per line, never half-loaded, never one bad line
+  disabling the registry. Built-ins stay fully on.
 - Directives (whitespace-separated, `#` starts a comment at line start
   or after whitespace):
 
 ```
 expose <name> on|off
-tool <name> <abspath> <read|test> <timeout-s> <max-bytes> <sandbox on|off> <dir> -- <fixed args...>
+lockdown_ssh true|false
+tool <name> <abspath> <read|test|ask> <timeout-s> <max-bytes> <sandbox on|off> <dir> -- <fixed args...>
 ```
 
 ## The `tool` line, field by field
@@ -33,17 +36,62 @@ tool <name> <abspath> <read|test> <timeout-s> <max-bytes> <sandbox on|off> <dir>
 | Field | Rule (enforced, fail line) |
 |---|---|
 | `name` | lowercase start, `[a-z0-9_]` only, ≤ 32 chars; must not collide with a built-in or another external |
-| `exe` | absolute path, no `..`, no shell metacharacters (`;|&$"'\*?~()<>`, backslash, newline); basename must not be denied (below) |
-| `class` | `read` (runs unsandboxed) or `test` (runs sandboxed) |
+| `exe` | absolute path, no `..`, no shell metacharacters (`;|&$"'\*?~()<>`, backslash, newline); basename must not be denied (below; `ssh` only with `lockdown_ssh false`) |
+| `class` | `read` (runs unsandboxed) or `test` (runs sandboxed) or `ask` (runs like read, plus one caller prompt on stdin) |
 | `timeout-s` | 1–3600; breach → SIGKILL, output gains a `[timeout]` marker |
 | `max-bytes` | 1–1048576; combined stdout+stderr capped here |
 | `sandbox` | `on` (bwrap) or `off`; stated explicitly either way |
 | `dir` | absolute working directory, no `..`, no metacharacters, no denied substrings |
-| fixed args | after `--`; **callers pass no arguments, ever** — what is configured is what runs |
+| fixed args | after `--`; **callers pass no arguments, ever** — what is configured is what runs (except the single `ask` prompt, below) |
 
 `expose <name> off` removes a non-checkpoint built-in from list and
 call (unknown, per the gating rule). `checkpoint_*` can never be
 switched off. `expose ... on` is accepted and is a no-op record.
+
+## The `ask` class: one caller prompt, nothing else
+
+`read` and `test` tools take no caller input at all. An `ask` tool
+takes exactly one caller string — the MCP `prompt` argument
+(required, non-empty; wrong-typed is a protocol error, missing is a
+tool error):
+
+- The prompt is written to a **dedicated stdin pipe**; after the
+  last byte the write end closes, so the child always sees EOF.
+  Then the response is read back through MCP like any other tool.
+- `read`/`test` children (and any child whose prompt is absent)
+  run with stdin from `/dev/null`: no external can ever consume
+  the MCP session's input. Stdin inheritance was the hang vector
+  (a prompt-reading child attached to an open session pipe waits
+  forever); it is closed by construction now.
+- Prompt **content is never stored**: the audit row notes only its
+  byte length (`<stdin:N bytes>`). Exit status, timing, timeout
+  and truncation are audited exactly like other externals.
+
+This is the shape that fits CLIs with different task-input
+contracts without pretending they are identical: a `codex exec -`
+adapter reads the task from stdin; an `opencode run -f` adapter
+would take the supervisor-written task file as a fixed-position
+flag argument. Same confinement, per-tool input truth.
+
+## SSH lockdown: operator-owned, default refuse
+
+`ssh` executables are refused by default. The operator permits them
+explicitly and only them:
+
+```
+lockdown_ssh=false
+```
+
+- Default `true` (also when the line is absent or invalid):
+  any tool naming an `ssh` executable is skipped like any other
+  refused line. Fail-closed toward refuse, never toward permission.
+- `false`: explicitly configured `ssh` executables run through
+  the same fixed-argv, timeout, audit and sandbox interface.
+- Last valid `lockdown_ssh` line wins, wherever it sits.
+- Nothing else about the denylist changes: `sshd`, `scp` and every
+  other network tool stay denied either way, as do shells,
+  privilege tools, the build/sign/publish/install lane and
+  MCP-owned state.
 
 ## What can never be registered
 
@@ -57,7 +105,8 @@ Three denylists, all fail the line (executed code, `src/conf.c`):
   build/sign/publish/install lane (`apk`, `buildpkg*`, `bumppkg`,
   `makepkg`, `resolvepkg`, `sign-apk-repo`, `installpkg`), namespace
   escapes (`chroot`, `nsenter`, `unshare`, `bwrap`), network tools
-  (`ssh`, `scp`, `curl`, `wget`, `nc`, `socat` ...), editors
+  (`scp`, `curl`, `wget`, `nc`, `socat` ...; `ssh` additionally
+  governed by `lockdown_ssh`, `sshd` never allowed), editors
   (`vi`, `emacs` ...), file mutators (`tee`, `dd`, `cp`, `mv`, `rm`,
   `chmod`, `chown` ...), and compilers (`cc`, `gcc`, `make`, `cmake`,
   `go`, `cargo` ...).
@@ -80,8 +129,14 @@ Three denylists, all fail the line (executed code, `src/conf.c`):
   run as an external.
 - `sandbox off`: `chdir(dir)`, run. `sandbox on`: bubblewrap with
   `--unshare-net` (**no network**), the tool dir read-bound, then run.
-  Network-needing externals must be class `read` + `sandbox off`;
+  Network-needing externals (including any `lockdown_ssh=false`
+  ssh tool) must be class `read` or `ask` + `sandbox off`;
   the class documents the operator's intent.
+- Child stdin is never the session: `read`/`test` children get
+  `/dev/null`; `ask` children get the caller prompt on a dedicated
+  pipe closed with EOF after writing (SIGPIPE is ignored server-side,
+  so an early-exiting child produces EPIPE bookkeeping, not a dead
+  server).
 - Combined stdout+stderr (test failures stay visible in one place),
   capped at `max-bytes`; the response appends an
   `[exit=N elapsed_ms=M]` footer. Non-zero exit → `isError: true`.

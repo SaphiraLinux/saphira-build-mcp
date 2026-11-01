@@ -5,6 +5,7 @@
 #include <errno.h>
 #ifndef _WIN32
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #endif
 #include <sqlite3.h>
@@ -92,8 +93,11 @@ static const char *bwrap_bin(void) {
 #endif
 
 int runner_exec(const ext_tool *t, const char *author,
-                const char *recorder, gbuf *out, int *is_error) {
+                const char *recorder, const char *prompt, size_t prompt_len,
+                gbuf *out, int *is_error) {
 	int pipefd[2] = { -1, -1 };
+	int infd[2] = { -1, -1 }; /* dedicated stdin pipe, ask tools */
+	size_t in_off = 0;        /* prompt bytes written so far */
 #ifndef _WIN32
 	pid_t pid;
 #endif
@@ -154,6 +158,8 @@ int runner_exec(const ext_tool *t, const char *author,
 	(void)reaped;
 	(void)ms;
 	(void)foot;
+	(void)prompt;
+	(void)prompt_len;
 	gbuf_adds(out, "tool execution is not supported on Windows");
 	*is_error = 1;
 	audit(t, author, recorder, -1, 0, 0, 0, t->exe);
@@ -169,6 +175,28 @@ int runner_exec(const ext_tool *t, const char *author,
 		int fl = fcntl(pipefd[0], F_GETFL, 0);
 		if (fl >= 0)
 			fcntl(pipefd[0], F_SETFL, fl | O_NONBLOCK);
+	}
+	/* A child that exits while its prompt is still being written
+	 * must produce EPIPE on the write, not a dead server. */
+	{
+		static int sigpipe_done = 0;
+		if (!sigpipe_done) {
+			signal(SIGPIPE, SIG_IGN);
+			sigpipe_done = 1;
+		}
+	}
+	/* Dedicated stdin: ask tools get the caller prompt with EOF
+	 * after writing. Everything else gets /dev/null in the child
+	 * (below), so no external can ever consume the MCP session's
+	 * input — stdin inheritance was the hang vector. */
+	if (prompt && prompt_len) {
+		if (pipe(infd) != 0) {
+			gbuf_adds(out, "internal error: pipe failed");
+			*is_error = 1;
+			close(pipefd[0]);
+			close(pipefd[1]);
+			return 0;
+		}
 	}
 	if (t->sandbox) {
 		size_t i;
@@ -247,11 +275,19 @@ int runner_exec(const ext_tool *t, const char *author,
 		exec_argv[ea++] = t->argv[status];
 	exec_argv[ea] = NULL;
 	status = -1;
-	/* argv text for the audit row (fixed conf argv, space-joined). */
+	/* argv text for the audit row (fixed conf argv, space-joined).
+	 * Prompt content is never stored: only its byte length rides
+	 * along, so the audit shows input was delivered without
+	 * journaling caller data. */
 	for (ea = 0; ea < t->argc; ea++) {
 		if (ea)
 			gbuf_addch(&argv_text, ' ');
 		gbuf_adds(&argv_text, t->argv[ea]);
+	}
+	if (prompt && prompt_len) {
+		char mark[64];
+		snprintf(mark, sizeof mark, " <stdin:%zu bytes>", prompt_len);
+		gbuf_adds(&argv_text, mark);
 	}
 	pid = fork();
 	if (pid < 0) {
@@ -259,6 +295,10 @@ int runner_exec(const ext_tool *t, const char *author,
 		*is_error = 1;
 		close(pipefd[0]);
 		close(pipefd[1]);
+		if (infd[0] >= 0)
+			close(infd[0]);
+		if (infd[1] >= 0)
+			close(infd[1]);
 		gbuf_free(&argv_text);
 		return 0;
 	}
@@ -271,6 +311,23 @@ int runner_exec(const ext_tool *t, const char *author,
 		if (dup2(pipefd[1], 1) < 0 || dup2(pipefd[1], 2) < 0)
 			_exit(127);
 		close(pipefd[1]);
+		if (infd[1] >= 0)
+			close(infd[1]);
+		if (infd[0] >= 0) {
+			/* Ask tool: caller prompt arrives here; the
+			 * parent closes its write end after writing,
+			 * so EOF is guaranteed. */
+			if (dup2(infd[0], 0) < 0)
+				_exit(127);
+			close(infd[0]);
+		} else {
+			/* No caller input: stdin from /dev/null. */
+			int dn = open("/dev/null", O_RDONLY);
+			if (dn >= 0) {
+				dup2(dn, 0);
+				close(dn);
+			}
+		}
 		if (!t->sandbox && chdir(t->dir) != 0)
 			_exit(127);
 		if (t->sandbox)
@@ -286,29 +343,74 @@ int runner_exec(const ext_tool *t, const char *author,
 	}
 	close(pipefd[1]);
 	pipefd[1] = -1;
+	if (infd[0] >= 0) {
+		close(infd[0]);
+		infd[0] = -1;
+	}
 	clock_gettime(CLOCK_MONOTONIC, &t0);
 	for (;;) {
 		char buf[8192];
-		ssize_t n;
+		ssize_t n = -2;
 		pid_t w = 0;
 		int drained = 0;
-		n = read(pipefd[0], buf, sizeof buf);
-		if (n > 0) {
-			if ((long)(out->len) < t->max_bytes) {
-				size_t room = (size_t)(t->max_bytes - (long)out->len);
-				gbuf_addn(out, buf, (size_t)n < room ? (size_t)n : room);
-				if ((size_t)n > room)
-					truncated = 1;
+		struct pollfd pf[2];
+		int np = 0, oi = 0, ii = -1, pr;
+		/* Stdout stays polled until its EOF is seen: the break
+		 * below needs the final drain, reaped or not. */
+		pf[np].fd = pipefd[0];
+		pf[np].events = POLLIN;
+		pf[np].revents = 0;
+		oi = np++;
+		if (infd[1] >= 0) {
+			pf[np].fd = infd[1];
+			pf[np].events = POLLOUT;
+			pf[np].revents = 0;
+			ii = np++;
+		}
+		pr = poll(pf, (nfds_t)np, 20);
+		if (pr < 0 && errno != EINTR)
+			break; /* unexpected poll error: stop with what we have */
+		if (pr < 0)
+			continue;
+		if (ii >= 0 && (pf[ii].revents & (POLLERR | POLLHUP | POLLNVAL))) {
+			/* Child gone before the prompt landed. */
+			close(infd[1]);
+			infd[1] = -1;
+		} else if (ii >= 0 && (pf[ii].revents & POLLOUT)) {
+			if (in_off < prompt_len) {
+				ssize_t m = write(infd[1], prompt + in_off,
+				                  prompt_len - in_off);
+				if (m > 0) {
+					in_off += (size_t)m;
+				} else {
+					close(infd[1]);
+					infd[1] = -1;
+				}
 			} else {
-				truncated = 1;
+				/* Prompt delivered: EOF after writing. */
+				close(infd[1]);
+				infd[1] = -1;
 			}
-		} else if (n == 0 || (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))) {
-			/* EOF (writers gone) or nothing available now. */
-			drained = (n == 0);
-			if (!reaped)
-				w = waitpid(pid, &status, WNOHANG);
-		} else {
-			break; /* unexpected read error: stop with what we have */
+		}
+		if (pf[oi].revents & (POLLIN | POLLHUP | POLLERR)) {
+			n = read(pipefd[0], buf, sizeof buf);
+			if (n > 0) {
+				if ((long)(out->len) < t->max_bytes) {
+					size_t room = (size_t)(t->max_bytes - (long)out->len);
+					gbuf_addn(out, buf, (size_t)n < room ? (size_t)n : room);
+					if ((size_t)n > room)
+						truncated = 1;
+				} else {
+					truncated = 1;
+				}
+			} else if (n == 0 || (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))) {
+				/* EOF (writers gone) or nothing available now. */
+				drained = (n == 0);
+				if (!reaped)
+					w = waitpid(pid, &status, WNOHANG);
+			} else {
+				break; /* unexpected read error: stop with what we have */
+			}
 		}
 		if (!reaped && w == 0)
 			w = waitpid(pid, &status, WNOHANG);
@@ -321,11 +423,15 @@ int runner_exec(const ext_tool *t, const char *author,
 		if (ms > t->timeout_s * 1000L) {
 			kill(pid, SIGKILL);
 			waitpid(pid, &status, 0);
+			if (infd[1] >= 0) {
+				close(infd[1]);
+				infd[1] = -1;
+			}
 			timed_out = 1;
 			status = -1;
 			break;
 		}
-		if (n <= 0)
+		if (n <= 0 && pr != 0)
 			usleep(20000);
 	}
 	/* Final drain: the child is reaped but bytes may remain. */
@@ -346,6 +452,16 @@ int runner_exec(const ext_tool *t, const char *author,
 		break;
 	}
 	close(pipefd[0]);
+	/* Belt and suspenders: stdin ends are normally closed in the
+	 * loop above; never leak one on an early break. */
+	if (infd[0] >= 0) {
+		close(infd[0]);
+		infd[0] = -1;
+	}
+	if (infd[1] >= 0) {
+		close(infd[1]);
+		infd[1] = -1;
+	}
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	{
 		int code;

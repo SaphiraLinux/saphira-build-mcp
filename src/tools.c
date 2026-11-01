@@ -5564,30 +5564,73 @@ static int is_base(const char *name) {
 
 /* Cross-checks conf.c cannot do: expose targets must be real
  * built-ins and never the checkpoint register; external names must
- * not shadow built-ins. Violations invalidate extensions (built-ins
- * stay fully on) rather than failing the server. */
+ * not shadow built-ins and must be unique. Violations drop only the
+ * offending entry (first reason kept) — unrelated entries keep
+ * working — rather than failing the server or killing the registry. */
+static void free_ext_tool(ext_tool *t) {
+	int j;
+	free(t->name);
+	free(t->exe);
+	free(t->cls);
+	free(t->dir);
+	if (t->argv) {
+		for (j = 0; j < t->argc; j++)
+			free(t->argv[j]);
+		free(t->argv);
+	}
+	memset(t, 0, sizeof *t);
+}
+
 static void tools_validate(ext_conf *c) {
-	int i;
+	int i, w;
 	if (!c->ok || !c->present)
 		return;
-	for (i = 0; i < c->noff; i++) {
+	for (i = 0, w = 0; i < c->noff; i++) {
 		if (!is_base(c->off[i]) ||
 		    strncmp(c->off[i], "checkpoint_", 11) == 0) {
-			snprintf(c->err, sizeof c->err,
-			         "expose refused for '%s'", c->off[i]);
-			c->ok = 0;
-			return;
+			if (!c->err[0])
+				snprintf(c->err, sizeof c->err,
+				         "expose refused for '%s'", c->off[i]);
+			c->nskipped++;
+			free(c->off[i]);
+			continue;
 		}
+		c->off[w++] = c->off[i];
 	}
-	for (i = 0; i < c->ntools; i++) {
+	c->noff = w;
+	for (i = 0, w = 0; i < c->ntools; i++) {
+		int j, dupe = 0;
 		if (is_base(c->tools[i].name)) {
-			snprintf(c->err, sizeof c->err,
-			         "external shadows builtin '%s'",
-			         c->tools[i].name);
-			c->ok = 0;
-			return;
+			if (!c->err[0])
+				snprintf(c->err, sizeof c->err,
+				         "external shadows builtin '%s'",
+				         c->tools[i].name);
+			c->nskipped++;
+			free_ext_tool(&c->tools[i]);
+			continue;
 		}
+		for (j = 0; j < w; j++) {
+			if (strcmp(c->tools[j].name, c->tools[i].name) == 0) {
+				dupe = 1;
+				break;
+			}
+		}
+		if (dupe) {
+			if (!c->err[0])
+				snprintf(c->err, sizeof c->err,
+				         "duplicate external '%s'",
+				         c->tools[i].name);
+			c->nskipped++;
+			free_ext_tool(&c->tools[i]);
+			continue;
+		}
+		if (w != i) {
+			c->tools[w] = c->tools[i];
+			memset(&c->tools[i], 0, sizeof c->tools[i]);
+		}
+		w++;
 	}
+	c->ntools = w;
 }
 
 static int ext_is_off(const ext_conf *c, const char *name) {
@@ -5666,6 +5709,7 @@ void tools_list_json(gbuf *out) {
 	if (conf.ok) {
 		for (i = 0; i < conf.ntools; i++) {
 			const ext_tool *t = &conf.tools[i];
+			int is_ask = strcmp(t->cls, "ask") == 0;
 			gbuf d;
 			int a;
 			if (!first)
@@ -5679,13 +5723,24 @@ void tools_list_json(gbuf *out) {
 					gbuf_addch(&d, ' ');
 				gbuf_adds(&d, t->argv[a]);
 			}
-			gbuf_adds(&d, " (tools.conf)");
+			if (is_ask)
+				gbuf_adds(&d, " (tools.conf; pass prompt, delivered on stdin)");
+			else
+				gbuf_adds(&d, " (tools.conf)");
 			gbuf_adds(out, "{\"name\":");
 			json_escape(out, t->name, strlen(t->name));
 			gbuf_adds(out, ",\"description\":");
 			json_escape(out, d.p ? d.p : "", d.len);
-			gbuf_adds(out, ",\"inputSchema\":"
-			               "{\"type\":\"object\",\"properties\":{}}}");
+			/* ask tools take one caller string; everything else
+			 * takes none, as before. */
+			if (is_ask)
+				gbuf_adds(out, ",\"inputSchema\":"
+				               "{\"type\":\"object\",\"properties\":"
+				               "{\"prompt\":{\"type\":\"string\"}},"
+				               "\"required\":[\"prompt\"]}");
+			else
+				gbuf_adds(out, ",\"inputSchema\":"
+				               "{\"type\":\"object\",\"properties\":{}}}");
 			gbuf_free(&d);
 			first = 0;
 		}
@@ -5694,13 +5749,29 @@ void tools_list_json(gbuf *out) {
 	conf_free(&conf);
 }
 
-/* Registered externals take no caller arguments: the conf argv is
- * the whole command. An author field is still honored for audit
- * attribution when supplied. */
+/* Registered externals take no caller arguments, except ask-class
+ * tools, which take exactly one: the MCP `prompt` string, delivered
+ * on a dedicated stdin pipe closed with EOF after writing. An author
+ * field is still honored for audit attribution when supplied. */
 static int t_external(jv *args, const ext_tool *t, gbuf *text, int *is_error) {
 	char author[128];
+	const char *prompt = NULL;
+	size_t prompt_len = 0;
 	resolve_credit(args, author, sizeof author);
-	return runner_exec(t, author, journal_recorder, text, is_error);
+	if (strcmp(t->cls, "ask") == 0) {
+		jv *v = args ? jv_get(args, "prompt") : NULL;
+		if (v && (v->t != 3 || !v->str))
+			return -1;
+		if (!v || !v->str[0]) {
+			*is_error = 1;
+			gbuf_adds(text, "prompt required: pass a non-empty prompt string");
+			prov(text, "tools.conf");
+			return text->failed ? -1 : 0;
+		}
+		prompt = v->str;
+		prompt_len = strlen(prompt);
+	}
+	return runner_exec(t, author, journal_recorder, prompt, prompt_len, text, is_error);
 }
 
 /* ------------------------------------------------------------------ */

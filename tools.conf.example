@@ -19,3 +19,14 @@ tool repo_diffstat /usr/bin/git read 10 65536 off /recipes -- --no-pager diff --
 
 # recipe lint (test class: sandboxed; runs the packager-owned rules).
 tool recipe_verify /recipes/saphira-packager/tests/recipe-rules.sh test 120 131072 on /recipes --
+
+# SSH is refused by default (lockdown_ssh=true). To permit
+# explicitly configured ssh-backed tools, the operator sets:
+#   lockdown_ssh=false
+# sshd, scp and every other network tool stay denied either way.
+# An ask-class ssh tool takes one caller prompt (MCP `prompt`
+# argument), delivered on stdin with EOF after writing:
+#   lockdown_ssh=false
+#   tool ollama_homer /usr/local/bin/ollama-homer ask 300 65536 off /recipes --
+# (wrapper runs `ssh ... ollama run <model>` reading the prompt from
+# stdin; prompt content is never stored, only its byte length.)

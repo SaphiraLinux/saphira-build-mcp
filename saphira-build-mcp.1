@@ -111,18 +111,25 @@ disabled) as errors, never as silent success.
 declares an exposure allowlist for the built-ins and an extension
 registry of curated external commands (SBM_TOOLS_CONF overrides the
 path; a missing file means built-ins only). Grammar is strict and
-fail-closed: a malformed or unsafe line disables extensions while
-the built-ins stay fully on, and checkpoint_* tools can never be
-switched off. Registered commands run with fixed argv via execve:
-no shell exists anywhere on the path, callers pass no arguments,
-and output is capped, timed, and audited to the journal tool_runs
-table (tool, argv, agent, exit status, elapsed time). Class is read
-or test; test entries run sandboxed by default (bwrap, SBM_BWRAP to
-override).
+fail-closed per line: a malformed or unsafe line is skipped (counted,
+first reason kept) while unrelated entries keep working, and
+checkpoint_* tools can never be switched off. Registered commands
+run with fixed argv via execve: no shell exists anywhere on the
+path. Read and test tools take no caller arguments; ask tools take
+exactly one caller string (the MCP prompt argument), delivered on a
+dedicated stdin pipe closed with EOF after writing — read and test
+tools run with stdin from /dev/null. Output is capped, timed, and
+audited to the journal tool_runs table (tool, argv, agent, exit
+status, elapsed time); prompt content is never stored, only its byte
+length. Class is read, test or ask; test entries run sandboxed by
+default (bwrap, SBM_BWRAP to override).
 .PP
 Denylisted by shape: shells, interpreters, command-executing
 filters, compilers, and anything that builds, signs, publishes or
-installs, plus any path naming MCP-owned writable state. The
+installs, plus any path naming MCP-owned writable state. SSH
+executables are additionally refused unless the operator sets
+lockdown_ssh false in the same file (default true); sshd, scp and
+every other network tool stay denied either way. The
 runner is an additional capability, never a second route around
 build and package operations.
 .SH CAPABILITIES
