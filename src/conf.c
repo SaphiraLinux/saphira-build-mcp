@@ -64,16 +64,13 @@ int build_mode(void) {
 	return -1;
 }
 
-static void conf_fail(ext_conf *c, const char *why) {
-	size_t n;
+static void conf_fail(ext_conf *c, int lineno, const char *why) {
 	c->ok = 0;
 	c->ntools = 0;
 	c->noff = 0;
-	n = strlen(why);
-	if (n > sizeof c->err - 1)
-		n = sizeof c->err - 1;
-	memcpy(c->err, why, n);
-	c->err[n] = 0;
+	/* Line number included: a rejected conf must say which line
+	 * failed. Precision-bounded so the error always fits. */
+	snprintf(c->err, sizeof c->err, "line %d: %.220s", lineno, why);
 }
 
 void conf_free(ext_conf *c) {
@@ -203,7 +200,7 @@ void conf_load(ext_conf *c) {
 		lineno++;
 		if (!strchr(line, '\n') && !feof(f)) {
 			fclose(f);
-			conf_fail(c, "line too long");
+			conf_fail(c, lineno, "line too long");
 			return;
 		}
 		/* Comment: # at start or after whitespace ends the line. */
@@ -214,7 +211,7 @@ void conf_load(ext_conf *c) {
 		n = split(line, toks, (int)(sizeof toks / sizeof toks[0]));
 		if (n < 0) {
 			fclose(f);
-			conf_fail(c, "too many tokens");
+			conf_fail(c, lineno, "too many tokens");
 			return;
 		}
 		if (n == 0)
@@ -223,24 +220,24 @@ void conf_load(ext_conf *c) {
 			if (n != 3 || (strcmp(toks[2], "on") != 0 &&
 			    strcmp(toks[2], "off") != 0)) {
 				fclose(f);
-				conf_fail(c, "bad expose line");
+				conf_fail(c, lineno, "bad expose line");
 				return;
 			}
 			if (has_metachars(toks[1])) {
 				fclose(f);
-				conf_fail(c, "bad expose name");
+				conf_fail(c, lineno, "bad expose name");
 				return;
 			}
 			if (strcmp(toks[2], "off") == 0) {
 				if (c->noff >= (int)(sizeof c->off / sizeof c->off[0])) {
 					fclose(f);
-					conf_fail(c, "too many expose lines");
+					conf_fail(c, lineno, "too many expose lines");
 					return;
 				}
 				c->off[c->noff] = strdup(toks[1]);
 				if (!c->off[c->noff]) {
 					fclose(f);
-					conf_fail(c, "out of memory");
+					conf_fail(c, lineno, "out of memory");
 					return;
 				}
 				c->noff++;
@@ -249,7 +246,7 @@ void conf_load(ext_conf *c) {
 		}
 		if (strcmp(toks[0], "tool") != 0) {
 			fclose(f);
-			conf_fail(c, "unknown directive");
+			conf_fail(c, lineno, "unknown directive");
 			return;
 		}
 		/* tool name exe class timeout maxbytes sandbox dir -- args */
@@ -262,7 +259,7 @@ void conf_load(ext_conf *c) {
 		}
 		if (dash != 8) {
 			fclose(f);
-			conf_fail(c, "bad tool line shape");
+			conf_fail(c, lineno, "bad tool line shape");
 			return;
 		}
 		if (!valid_name(toks[1]) || toks[2][0] != '/' ||
@@ -271,14 +268,14 @@ void conf_load(ext_conf *c) {
 		    (strcmp(toks[6], "on") != 0 && strcmp(toks[6], "off") != 0) ||
 		    toks[7][0] != '/' || has_dotdot(toks[7])) {
 			fclose(f);
-			conf_fail(c, "bad tool fields");
+			conf_fail(c, lineno, "bad tool fields");
 			return;
 		}
 		if (denied_exe(toks[2]) || denied_state(toks[2]) ||
 		    denied_state(toks[7]) || has_metachars(toks[2]) ||
 		    has_metachars(toks[7])) {
 			fclose(f);
-			conf_fail(c, "tool path refused");
+			conf_fail(c, lineno, "tool path refused");
 			return;
 		}
 		{
@@ -287,31 +284,31 @@ void conf_load(ext_conf *c) {
 			long mb;
 			if (!end || *end || to < 1 || to > 3600) {
 				fclose(f);
-				conf_fail(c, "bad timeout");
+				conf_fail(c, lineno, "bad timeout");
 				return;
 			}
 			end = NULL;
 			mb = strtol(toks[5], &end, 10);
 			if (!end || *end || mb < 1 || mb > 1048576) {
 				fclose(f);
-				conf_fail(c, "bad max-bytes");
+				conf_fail(c, lineno, "bad max-bytes");
 				return;
 			}
 			if (c->ntools >= CONF_MAX_TOOLS) {
 				fclose(f);
-				conf_fail(c, "too many tools");
+				conf_fail(c, lineno, "too many tools");
 				return;
 			}
 			if (n - dash - 1 > CONF_MAX_ARGV - 1) {
 				fclose(f);
-				conf_fail(c, "too many args");
+				conf_fail(c, lineno, "too many args");
 				return;
 			}
 			for (i = dash + 1; i < n; i++) {
 				if (has_metachars(toks[i]) ||
 				    denied_state(toks[i])) {
 					fclose(f);
-					conf_fail(c, "tool arg refused");
+					conf_fail(c, lineno, "tool arg refused");
 					return;
 				}
 			}
@@ -339,7 +336,7 @@ void conf_load(ext_conf *c) {
 				free(t->dir);
 				free(t->argv);
 				fclose(f);
-				conf_fail(c, "out of memory");
+				conf_fail(c, lineno, "out of memory");
 				return;
 			}
 			t->argv[0] = strdup(toks[2]);
@@ -350,7 +347,7 @@ void conf_load(ext_conf *c) {
 				free(t->dir);
 				free(t->argv);
 				fclose(f);
-				conf_fail(c, "out of memory");
+				conf_fail(c, lineno, "out of memory");
 				return;
 			}
 			t->argc = 1;
@@ -358,7 +355,7 @@ void conf_load(ext_conf *c) {
 				t->argv[t->argc] = strdup(toks[i]);
 				if (!t->argv[t->argc]) {
 					fclose(f);
-					conf_fail(c, "out of memory");
+					conf_fail(c, lineno, "out of memory");
 					return;
 				}
 				t->argc++;
@@ -367,7 +364,7 @@ void conf_load(ext_conf *c) {
 			for (i = 0; i < c->ntools; i++) {
 				if (strcmp(c->tools[i].name, t->name) == 0) {
 					fclose(f);
-					conf_fail(c, "duplicate tool name");
+					conf_fail(c, lineno, "duplicate tool name");
 					return;
 				}
 			}

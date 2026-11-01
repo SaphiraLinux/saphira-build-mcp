@@ -322,8 +322,9 @@ static int recipe_disabled_value(const char *v) {
 	       strcmp(v, "true") == 0;
 }
 
-/* Collect all recipes. Returns 0 with *out/*n set (caller frees via
- * recipe_free_all), or -1 when the tree cannot even be listed. */
+/* Collect all recipes. Returns 0 with *out and *n set; the caller
+ * frees via recipe_free_all. Returns -1 when the tree cannot even
+ * be listed. */
 static int recipe_collect(recipe_t **out, size_t *n) {
 	DIR *d;
 	struct dirent *e;
@@ -1682,7 +1683,7 @@ static int t_installed(jv *args, gbuf *text, int *is_error, char *err, size_t er
 	idesc[0] = 0;
 	f = fopen(path_apkdb(), "r");
 	if (f) {
-		char cn[128] = "", cv[128] = "", cd[256] = "";
+		char cv[128] = "", cd[256] = "";
 		int in_match = 0, matched = 0;
 		while (fgets(line, sizeof line, f)) {
 			size_t L;
@@ -1690,7 +1691,7 @@ static int t_installed(jv *args, gbuf *text, int *is_error, char *err, size_t er
 				in_match = 0;
 				if (matched)
 					break;
-				cn[0] = cv[0] = cd[0] = 0;
+				cv[0] = cd[0] = 0;
 				continue;
 			}
 			L = strlen(line);
@@ -1703,9 +1704,9 @@ static int t_installed(jv *args, gbuf *text, int *is_error, char *err, size_t er
 				if (in_match)
 					matched = 1;
 			} else if (in_match && line[0] == 'V') {
-				snprintf(cv, sizeof cv, "%s", line + 2);
+				snprintf(cv, sizeof cv, "%.127s", line + 2);
 			} else if (in_match && line[0] == 'T') {
-				snprintf(cd, sizeof cd, "%s", line + 2);
+				snprintf(cd, sizeof cd, "%.255s", line + 2);
 			}
 		}
 		fclose(f);
@@ -2086,10 +2087,10 @@ static int t_log(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
 				continue;
 			}
 			if (truncated)
-				snprintf(head, sizeof head, "[%s: showing last %zu of %zu bytes]\n",
+				snprintf(head, sizeof head, "[%.187s: showing last %zu of %zu bytes]\n",
 				         path, content.len, total);
 			else
-				snprintf(head, sizeof head, "[%s: %zu bytes]\n", path, total);
+				snprintf(head, sizeof head, "[%.224s: %zu bytes]\n", path, total);
 			gbuf_adds(text, head);
 			gbuf_addn(text, content.p ? content.p : "", content.len);
 			if (content.len && content.p[content.len - 1] != '\n')
@@ -2112,6 +2113,10 @@ static int t_artifacts(jv *args, gbuf *text, int *is_error, char *err, size_t er
 	DIR *d;
 	struct dirent *e;
 	int staged = 0, stale = 0;
+	/* Degradations report inline by design (unavailable data is a
+	 * named absence, never a transport error), so no path here
+	 * sets isError. */
+	(void)is_error;
 	char dbpath[4096];
 	char dberr[256];
 	sqlite3 *db = NULL;
@@ -3451,9 +3456,13 @@ static int t_readiness(jv *args, gbuf *text, int *is_error, char *err, size_t er
 			gbuf_adds(text, "  (no notes recorded)\n");
 		else if (nnotes > shown) {
 			char tmp[64];
+			/* Display-capped: %d keeps the bound provable;
+			 * the cap only engages past absurd counts. */
+			int more = (nnotes - shown) > 99999 ?
+			           99999 : (int)(nnotes - shown);
 			snprintf(tmp, sizeof tmp,
-			         "  (... %ld more; full bodies via"
-			         " package_notes_get)\n", nnotes - shown);
+			         "  (... %d more; full bodies via"
+			         " package_notes_get)\n", more);
 			gbuf_adds(text, tmp);
 		} else
 			gbuf_adds(text, "  (full bodies via package_notes_get)\n");
@@ -3648,7 +3657,10 @@ static int t_build_request(jv *args, gbuf *text, int *is_error, char *err, size_
 		         nvr, sizeof nvr);
 		{
 			char full[280];
-			snprintf(full, sizeof full, "%s-%s", r->name, nvr);
+			/* Precision-bounded: recipe names fit [128), real
+			 * NVRs fit well inside, so the bound never engages
+			 * on genuine input - it only makes the fit provable. */
+			snprintf(full, sizeof full, "%.127s-%.151s", r->name, nvr);
 			recipe_free_all(pkgs, n);
 			repo_newest_nvr(pkg, newest, sizeof newest);
 			if (newest[0] && strcmp(newest, full) == 0) {
@@ -3730,7 +3742,7 @@ static int t_build_request(jv *args, gbuf *text, int *is_error, char *err, size_
 		if (nid > 0)
 			snprintf(tmp, sizeof tmp, "note %ld recorded: build requested\n", nid);
 		else
-			snprintf(tmp, sizeof tmp, "WARNING: journal write failed (%s)\n", dberr);
+			snprintf(tmp, sizeof tmp, "WARNING: journal write failed (%.94s)\n", dberr);
 		gbuf_adds(text, tmp);
 	}
 	gbuf_adds(text, "the builder daemon executes detached; follow with build_queue / package_build_status\n");
@@ -3838,7 +3850,7 @@ static int t_package_bump(jv *args, gbuf *text, int *is_error, char *err, size_t
 		if (nid > 0)
 			snprintf(tmp, sizeof tmp, "note %ld recorded: revision bumped\n", nid);
 		else
-			snprintf(tmp, sizeof tmp, "WARNING: bump succeeded but journal write failed (%s)\n", dberr);
+			snprintf(tmp, sizeof tmp, "WARNING: bump succeeded but journal write failed (%.75s)\n", dberr);
 		gbuf_adds(text, tmp);
 	}
 	prov(text, "bumppkg, notes.db");

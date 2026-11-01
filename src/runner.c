@@ -221,7 +221,11 @@ int runner_exec(const ext_tool *t, const char *author,
 						exec_argv[ea++] = linktgt[ti];
 					} else {
 						char *p = linktgt[ti] + 2048;
-						snprintf(p, 2048, "/%s",
+						/* Bounded by construction: readlink
+						 * above rejects k >= 2047, so the
+						 * precision never engages - it only
+						 * makes the fit provable. */
+						snprintf(p, 2048, "/%.2046s",
 						         linktgt[ti]);
 						exec_argv[ea++] = p;
 					}

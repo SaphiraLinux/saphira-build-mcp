@@ -47,10 +47,10 @@
 static void now_iso(char *out, size_t n) {
 	time_t t = time(NULL);
 	struct tm tm;
+	/* strftime owns the bound: the manual %04d form provoked a
+	 * truncation warning gcc cannot discharge on plain ints. */
 	sb_gmtime(&t, &tm);
-	snprintf(out, n, "%04d-%02d-%02dT%02d:%02d:%02dZ",
-	         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-	         tm.tm_hour, tm.tm_min, tm.tm_sec);
+	strftime(out, n, "%Y-%m-%dT%H:%M:%SZ", &tm);
 }
 
 /* Builder name for rows that record none: same precedence as the
@@ -667,7 +667,7 @@ int bridge_render(sqlite3 *jdb, const char *pkg, long limit, gbuf *text) {
 	if (!nf)
 		gbuf_adds(text, "  (none)\n");
 	for (i = 0; i < nf && i < limit; i++) {
-		snprintf(tmp, sizeof tmp, "  %s %s %s since %s\n",
+		snprintf(tmp, sizeof tmp, "  %.127s %.159s %.31s since %.31s\n",
 		         failed[i].package, failed[i].nvr, failed[i].state,
 		         failed[i].finished);
 		gbuf_adds(text, tmp);
@@ -679,7 +679,7 @@ int bridge_render(sqlite3 *jdb, const char *pkg, long limit, gbuf *text) {
 	if (!nw)
 		gbuf_adds(text, "  (none)\n");
 	for (i = 0; i < nw && i < limit; i++) {
-		snprintf(tmp, sizeof tmp, "  %s %s %s since %s\n",
+		snprintf(tmp, sizeof tmp, "  %.127s %.159s %.31s since %.31s\n",
 		         waiting[i].package, waiting[i].nvr,
 		         waiting[i].state, waiting[i].finished);
 		gbuf_adds(text, tmp);
@@ -691,7 +691,7 @@ int bridge_render(sqlite3 *jdb, const char *pkg, long limit, gbuf *text) {
 	if (!na)
 		gbuf_adds(text, "  (none)\n");
 	for (i = 0; i < na && i < limit; i++) {
-		snprintf(tmp, sizeof tmp, "  %s %s %s since %s\n",
+		snprintf(tmp, sizeof tmp, "  %.127s %.159s %.31s since %.31s\n",
 		         awaiting[i].package, awaiting[i].nvr,
 		         awaiting[i].state, awaiting[i].finished);
 		gbuf_adds(text, tmp);
@@ -703,7 +703,7 @@ int bridge_render(sqlite3 *jdb, const char *pkg, long limit, gbuf *text) {
 	if (!ns)
 		gbuf_adds(text, "  (none)\n");
 	for (i = 0; i < ns && i < limit; i++) {
-		snprintf(tmp, sizeof tmp, "  %s %s %s since %s (%s)\n",
+		snprintf(tmp, sizeof tmp, "  %.127s %.159s %.31s since %.31s (%.511s)\n",
 		         stale[i].package, stale[i].nvr,
 		         stale[i].state, stale[i].finished,
 		         stale[i].detail);
