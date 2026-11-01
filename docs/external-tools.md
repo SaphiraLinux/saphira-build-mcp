@@ -25,7 +25,7 @@ code change.
 
 ```
 expose <name> on|off
-lockdown_ssh true|false
+lockdown_ssh=false (or space-separated; default true)
 tool <name> <abspath> <read|test|ask> <timeout-s> <max-bytes> <sandbox on|off> <dir> -- <fixed args...>
 ```
 

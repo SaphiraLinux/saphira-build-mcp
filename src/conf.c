@@ -80,6 +80,7 @@ static void conf_skip(ext_conf *c, int lineno, const char *why) {
 static int scan_lockdown(const char *path) {
 	FILE *f;
 	char line[CONF_MAX_LINE];
+	char val[16];
 	int lockdown = 1;
 	f = fopen(path, "r");
 	if (!f)
@@ -93,19 +94,27 @@ static int scan_lockdown(const char *path) {
 		hash = strchr(p, '#');
 		if (hash && (hash == p || hash[-1] == ' ' || hash[-1] == '\t'))
 			*hash = 0;
-		if (strncmp(p, "lockdown_ssh", 12) != 0 ||
-		    (p[12] != ' ' && p[12] != '\t' && p[12] != '\n'))
+		if (strncmp(p, "lockdown_ssh", 12) != 0)
 			continue;
-		v = p + 12;
-		while (*v == ' ' || *v == '\t')
-			v++;
-		if (strcmp(v, "true\n") == 0 || strcmp(v, "on\n") == 0 ||
-		    strcmp(v, "true") == 0 || strcmp(v, "on") == 0)
-			lockdown = 1;
-		else if (strcmp(v, "false\n") == 0 || strcmp(v, "off\n") == 0 ||
-		    strcmp(v, "false") == 0 || strcmp(v, "off") == 0)
-			lockdown = 0;
-		/* Anything else is not a valid setting: keep current. */
+		/* Both `lockdown_ssh=false` and `lockdown_ssh false`
+		 * spellings accepted; first whitespace-delimited token
+		 * after the keyword (or `=`) is the value. */
+		if (p[12] == '=')
+			v = p + 13;
+		else if (p[12] == ' ' || p[12] == '\t') {
+			v = p + 12;
+			while (*v == ' ' || *v == '\t')
+				v++;
+		} else {
+			continue;
+		}
+		if (sscanf(v, "%15s", val) == 1) {
+			if (strcmp(val, "true") == 0 || strcmp(val, "on") == 0)
+				lockdown = 1;
+			else if (strcmp(val, "false") == 0 || strcmp(val, "off") == 0)
+				lockdown = 0;
+			/* Anything else is not a valid setting: keep current. */
+		}
 	}
 	fclose(f);
 	return lockdown;
@@ -293,14 +302,22 @@ void conf_load(ext_conf *c) {
 			}
 			continue;
 		}
-		if (strcmp(toks[0], "lockdown_ssh") == 0) {
-			/* Policy already applied by the pre-scan; accept a
-			 * well-formed line so a valid setting is not
-			 * counted as a skip. */
-			if (n != 2 || (strcmp(toks[1], "true") != 0 &&
-			    strcmp(toks[1], "false") != 0 &&
-			    strcmp(toks[1], "on") != 0 &&
-			    strcmp(toks[1], "off") != 0)) {
+		if (strncmp(toks[0], "lockdown_ssh", 12) == 0) {
+			/* Policy already applied by the pre-scan; accept
+			 * a well-formed line so a valid setting is not
+			 * counted as a skip. Both `lockdown_ssh=false`
+			 * and `lockdown_ssh false` spellings accepted. */
+			const char *vv = NULL;
+			char val[16];
+			if (toks[0][12] == '=' && n == 1)
+				vv = toks[0] + 13;
+			else if (toks[0][12] == 0 && n == 2)
+				vv = toks[1];
+			if (!vv || sscanf(vv, "%15s", val) != 1 ||
+			    (strcmp(val, "true") != 0 &&
+			     strcmp(val, "false") != 0 &&
+			     strcmp(val, "on") != 0 &&
+			     strcmp(val, "off") != 0)) {
 				conf_skip(c, lineno, "bad lockdown_ssh line");
 				continue;
 			}

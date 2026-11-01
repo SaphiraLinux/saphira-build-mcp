@@ -10,7 +10,7 @@
  * registered tools run with fixed argv via execve (see runner.c).
  *
  *   expose <builtin-name> <on|off>
- *   lockdown_ssh <true|false>   (default true; last valid wins)
+ *   lockdown_ssh[= ]<true|false>   (default true; last valid wins)
  *   tool <name> <abspath> <class> <timeout-s> <max-bytes> <sandbox:on|off> <dir> -- <fixed args...>
  *
  * class is read, test or ask. read runs unsandboxed, test runs

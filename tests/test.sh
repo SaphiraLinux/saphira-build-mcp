@@ -793,6 +793,10 @@ t_contains "nolock ssh runs fixed argv" "$out" 'fake-ssh ran (fixture)'
 printf 'tool ext_ssh %s read 10 100 off %s --\nlockdown_ssh false\n' "$FIX/bin/ssh" "$FIX" > "$FIX/ext-nolock-after.conf"
 out=$(SBM_TOOLS_CONF="$FIX/ext-nolock-after.conf" mcp '{"jsonrpc":"2.0","id":234,"method":"tools/list"}')
 t_contains "nolock after tool line works" "$out" '"name":"ext_ssh"'
+# the compact `lockdown_ssh=false` spelling works too.
+printf 'lockdown_ssh=false\ntool ext_ssh %s read 10 100 off %s --\n' "$FIX/bin/ssh" "$FIX" > "$FIX/ext-nolock-eq.conf"
+out=$(SBM_TOOLS_CONF="$FIX/ext-nolock-eq.conf" mcp '{"jsonrpc":"2.0","id":243,"method":"tools/list"}')
+t_contains "nolock equals form works" "$out" '"name":"ext_ssh"'
 # invalid lockdown value: fail closed toward refuse.
 printf 'lockdown_ssh maybe\ntool ext_ssh %s read 10 100 off %s --\n' "$FIX/bin/ssh" "$FIX" > "$FIX/ext-lockbad.conf"
 out=$(SBM_TOOLS_CONF="$FIX/ext-lockbad.conf" mcp '{"jsonrpc":"2.0","id":235,"method":"tools/list"}')
