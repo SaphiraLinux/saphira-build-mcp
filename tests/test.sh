@@ -802,6 +802,10 @@ printf 'tool ext_ask %s ask 10 65536 off %s --\n' "$FIX/bin/ext-ask.sh" "$FIX" >
 out=$(SBM_TOOLS_CONF="$FIX/ext-ask.conf" mcp '{"jsonrpc":"2.0","id":236,"method":"tools/list"}')
 t_contains "ask lists with prompt schema" "$out" '"required":["prompt"]'
 t_contains "ask describes stdin" "$out" 'External (ask):'
+# the list document must stay machine-readable (a missing brace
+# once shipped broken JSON that substring gates could not catch).
+SBM_TOOLS_CONF="$FIX/ext-ask.conf" "$BIN" --list-tools > "$ROOT/tools-list-ask.json"
+t_contains "list-tools ask parses" "$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['tools']))" "$ROOT/tools-list-ask.json" 2>/dev/null || echo PARSE-FAIL)" "25"
 out=$(SBM_TOOLS_CONF="$FIX/ext-ask.conf" mcp '{"jsonrpc":"2.0","id":237,"method":"tools/call","params":{"name":"ext_ask","arguments":{"prompt":"hello-qwen"}}}')
 t_contains "ask delivers prompt" "$out" 'asked:hello-qwen'
 t_contains "ask exit 0" "$out" '[exit=0'

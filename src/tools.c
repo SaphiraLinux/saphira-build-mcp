@@ -5737,7 +5737,7 @@ void tools_list_json(gbuf *out) {
 				gbuf_adds(out, ",\"inputSchema\":"
 				               "{\"type\":\"object\",\"properties\":"
 				               "{\"prompt\":{\"type\":\"string\"}},"
-				               "\"required\":[\"prompt\"]}");
+				               "\"required\":[\"prompt\"]}}");
 			else
 				gbuf_adds(out, ",\"inputSchema\":"
 				               "{\"type\":\"object\",\"properties\":{}}}");
