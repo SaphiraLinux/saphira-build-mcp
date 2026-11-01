@@ -486,7 +486,7 @@ re-executes them):
 
 - `docs/mcp-protocol.md` — JSON-RPC 2.0 over stdio, framing, methods,
   error catalogue, capabilities.
-- `docs/tools.md` — all 25 tools: params, real call/response pairs,
+- `docs/tools.md` — all 26 tools: params, real call/response pairs,
   and a curl + PowerShell form per tool.
 - `docs/jsonrpc-examples.md` — printf/pipe/Python sessions without
   any agent platform.

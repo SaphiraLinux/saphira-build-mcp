@@ -1,4 +1,4 @@
-# Tools reference (v0.10.12, 26 built-ins)
+# Tools reference (v0.10.13, 26 built-ins)
 
 Every section: capability badge, mutation class, parameters (from the
 live `inputSchema`), a valid `tools/call` example, and a **real

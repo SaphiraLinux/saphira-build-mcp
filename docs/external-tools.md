@@ -1,4 +1,4 @@
-# External tools: how `tools.conf` works (v0.10.12)
+# External tools: how `tools.conf` works (v0.10.13)
 
 Source of truth: `src/conf.c` (`conf_load`), `src/runner.c`, and one
 verified end-to-end run (a `codex exec review` that found a real

@@ -87,8 +87,10 @@ windows: $(SRC)
 
 windows-builtin: $(SRC)
 	@if [ -z "$(SQLITE_SRC)" ]; then echo "windows-builtin needs SQLITE_SRC=<sqlite3.c path>" >&2; exit 1; fi
-	$(MINGW_CC) $(WIN_CFLAGS) $(WIN_SQLITE_FLAGS) -I$(dir $(SQLITE_SRC)) $(SRC) $(SQLITE_SRC) -o saphira-build-mcp.windows-builtin.exe
+	$(MINGW_CC) $(WIN_CFLAGS) $(WIN_SQLITE_FLAGS) -I$(dir $(SQLITE_SRC)) -c $(SQLITE_SRC) -o sqlite3-amalgam.o -O2 -w
+	$(MINGW_CC) $(WIN_CFLAGS) $(WIN_SQLITE_FLAGS) -I$(dir $(SQLITE_SRC)) $(SRC) sqlite3-amalgam.o -o saphira-build-mcp.windows-builtin.exe
 	$(MINGW_STRIP) saphira-build-mcp.windows-builtin.exe
+	rm -f sqlite3-amalgam.o
 
 # Unix builtin variants (SQLite amalgamation compiled in; SQLITE_SRC
 # points at the sqlite3.c of a pinned amalgamation, e.g. 3530300).
@@ -96,10 +98,16 @@ windows-builtin: $(SRC)
 # (macOS links pthread/dl from libSystem).
 SQLITE_FLAGS  ?= -DSQLITE_ENABLE_FTS5 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=1
 BUILTIN_LIBS  ?= -lpthread -ldl -lm
+# The SQLite amalgamation is pinned third-party code: it compiles
+# in its own step with -w so upstream warnings at higher
+# optimization never pollute our own zero-warning build, whose
+# -Wall -Wextra flags stay untouched above.
 unix-builtin: $(SRC)
 	@if [ -z "$(SQLITE_SRC)" ]; then echo "unix-builtin needs SQLITE_SRC=<sqlite3.c path>" >&2; exit 1; fi
-	$(CC) $(CFLAGS) $(SQLITE_FLAGS) -I$(dir $(SQLITE_SRC)) $(SRC) $(SQLITE_SRC) -o $(BIN)-builtin $(LDFLAGS) $(BUILTIN_LIBS)
+	$(CC) $(SQLITE_FLAGS) -I$(dir $(SQLITE_SRC)) -c $(SQLITE_SRC) -o sqlite3-amalgam.o -O2 -w
+	$(CC) $(CFLAGS) $(SQLITE_FLAGS) -I$(dir $(SQLITE_SRC)) $(SRC) sqlite3-amalgam.o -o $(BIN)-builtin $(LDFLAGS) $(BUILTIN_LIBS)
 	strip $(BIN)-builtin
+	rm -f sqlite3-amalgam.o
 
 $(BIN): $(OBJ)
 	@echo "link $@ [$(LINK_MODE)]"
@@ -116,7 +124,7 @@ docs-test: all
 	sh docs/smoke.sh
 
 clean:
-	rm -f $(OBJ) $(BIN) saphira-build-mcp.windows.exe saphira-build-mcp.windows-builtin.exe
+	rm -f $(OBJ) $(BIN) saphira-build-mcp.windows.exe saphira-build-mcp.windows-builtin.exe sqlite3-amalgam.o
 
 install: all
 	install -d $(DESTDIR)$(BINDIR)
