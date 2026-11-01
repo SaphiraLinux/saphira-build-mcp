@@ -29,6 +29,9 @@ ifeq ($(STATIC),1)
 # silently producing a dynamic binary. The chosen mode is reported
 # on the link line (LINK_MODE), never as a warning.
 STATIC_SQLITE_OK := $(shell printf 'int main(void){return 0;}' | $(CC) -x c - -static -o /dev/null -lsqlite3 >/dev/null 2>&1 && echo yes || echo no)
+# Self-contained binaries carry their own SQLite: they need only a
+# working plain -static link, not a static system libsqlite3.
+STATIC_ALONE_OK := $(shell printf 'int main(void){return 0;}' | $(CC) -x c - -static -o /dev/null >/dev/null 2>&1 && echo yes || echo no)
 ifeq ($(STATIC_SQLITE_OK),yes)
     LDFLAGS ?= -static
     LINK_MODE = static
@@ -41,6 +44,16 @@ endif
 else
     LDFLAGS ?=
     LINK_MODE = dynamic
+endif
+# A self-contained unix binary needs no system SQLite, so it links
+# fully static wherever plain -static works (musl hosts) even when
+# no static libsqlite3 exists. Target-specific: other links keep the
+# mode decided above.
+ifeq ($(STATIC),1)
+ifeq ($(STATIC_ALONE_OK),yes)
+unix-builtin: LDFLAGS := -static
+unix-builtin: LINK_MODE := static
+endif
 endif
 
 # Install location follows privilege unless overridden: root installs

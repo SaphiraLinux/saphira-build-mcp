@@ -11,7 +11,7 @@ A local Model Context Protocol (MCP) server with two capabilities:
 
 You do **not** need Saphira Linux, `/recipes`, a Saphira repository
 or a builder database to use the portable features — and you do not
-need to compile anything. The repository ships six prebuilt
+need to compile anything. The repository ships eight prebuilt
 binaries plus one installer. Each platform comes in two sizes:
 small (shared system SQLite) and large (`-builtin`, SQLite
 compiled in, zero database dependency):
@@ -30,7 +30,7 @@ end, verified with `objdump`/`otool`/`ldd` per platform).
 
 The `-builtin` binaries carry SQLite inside (the `.musl` one is
 fully static); the small ones link the system SQLite — the musl
-small binary is ~99 KB against the builtin's ~818 KB. All six are
+small binary is ~219 KB against the builtin's ~1.5 MB. All nine are
 built from the tagged release named in `SHA256SUMS` and verified
 by checksum at install time. Bundling SQLite and producing a
 completely static executable are not the same thing, and the
