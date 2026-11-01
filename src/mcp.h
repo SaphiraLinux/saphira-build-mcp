@@ -11,13 +11,13 @@
 #define SBM_MAX_OUTPUT_FILE_BYTES (2u * 1024u * 1024u)
 
 /* tools/list is assembled at runtime (see tools_list_json in
- * tools.c): sixteen read-only tools plus four journal-scoped writes
- * (notes.db only - no recipe, queue, revision, signing, publish,
- * install or restart surface exists by design, not by omission),
- * plus two daemon/operator ops (build_request queues detached work,
- * package_bump applies bumppkg guards; neither signs, publishes nor
- * installs), plus four checkpoint register tools (save/resume/list/
- * close). /etc/saphira/mcp/tools.conf (see conf.h) may additionally
+ * tools.c): 24 built-ins (eighteen read-only tools plus four
+ * journal-scoped writes (notes.db only - no recipe, queue, revision,
+ * signing, publish, install or restart surface exists by design, not
+ * by omission), plus two daemon/operator ops (build_request queues
+ * detached work, package_bump applies bumppkg guards; neither signs,
+ * publishes nor installs), plus four checkpoint register tools
+ * (save/resume/list/close). /etc/saphira/mcp/tools.conf (see conf.h) may additionally
  * expose curated fixed-argv externals and switch off non-checkpoint
  * built-ins per host; the checkpoint register is always exposed. */
 

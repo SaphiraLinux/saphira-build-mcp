@@ -433,7 +433,7 @@ Orchestration & Operations) — https://shampoo.op2.uk. Free
 distribution does not by itself grant unrestricted commercial
 rights; the licence terms govern.
 
-Twenty-three built-ins in full mode (seventeen read-only plus
+Twenty-four built-ins in full mode (eighteen read-only plus
 six narrowly-scoped actions), ten in journal-only mode
 (checkpoints, notes, policy tools, readiness, total_recall),
 plus any `/etc/saphira/mcp/tools.conf` externals (see below).

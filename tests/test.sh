@@ -918,6 +918,29 @@ t_contains "build invalid mcp rc" "$out" "rc=2"
 out=$(SBM_BUILD=on "$BIN" --list-tools)
 t_contains "build on keeps request" "$out" '"name":"build_request"'
 t_contains "build on keeps bump" "$out" '"name":"package_bump"'
+# --- tool intros: 5-10 word verb-first descriptions ----------------------
+# Each built-in description opens with a short purpose intro (5-10
+# words); detailed usage lives in docs/tools.md, never in the intro.
+"$BIN" --list-tools > "$ROOT/tools-list.json"
+out=$(python3 - "$ROOT/tools-list.json" <<'EOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+bad = []
+n = 0
+for t in doc["tools"]:
+    name = t.get("name", "?")
+    if name.startswith("ext_"):
+        continue
+    n += 1
+    words = t.get("description", "").split()
+    if not (5 <= len(words) <= 10):
+        bad.append("%s(%d)" % (name, len(words)))
+print("builtins: %d" % n)
+print("bad: %s" % (" ".join(bad) if bad else "none"))
+EOF
+)
+t_contains "tool intros count" "$out" "builtins: 24"
+t_contains "tool intros 5-10 words" "$out" "bad: none"
 
 # --- framing: every stdout line is valid JSON ---------------------------
 mcp '{"jsonrpc":"2.0","id":30,"method":"tools/list"}' '{"jsonrpc":"2.0","id":31,"method":"ping"}' > "$ROOT/frames.txt"
