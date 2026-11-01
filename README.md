@@ -433,8 +433,8 @@ Orchestration & Operations) — https://shampoo.op2.uk. Free
 distribution does not by itself grant unrestricted commercial
 rights; the licence terms govern.
 
-Twenty-five built-ins in full mode (eighteen read-only plus
-seven narrowly-scoped actions), eleven in journal-only mode
+Twenty-six built-ins in full mode (eighteen read-only plus
+eight narrowly-scoped actions), thirteen in journal-only mode
 (checkpoints, notes, policy tools, readiness, total_recall),
 plus any `/etc/saphira/mcp/tools.conf` externals (see below).
 Gated-off tools vanish from `tools/list` and refuse calls as

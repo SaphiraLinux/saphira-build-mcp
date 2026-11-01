@@ -5946,13 +5946,275 @@ static void fore_checklist(const char *pkg, gbuf *text) {
 }
 
 /* ------------------------------------------------------------------ */
+/* sequential_thinking: stepwise reasoning with a committed end      */
+/* ------------------------------------------------------------------ */
+/* Native replicate of the Node sequential-thinking tool (retired):
+ * same parameters, same validation shapes, same JSON response — no
+ * Node.js runtime required. History lasts as long as the server
+ * process (the client connection), exactly like the original: the
+ * agent carries its own context, the server keeps the chain.
+ * The one addition: decision + reason persist a single journal
+ * note (kind=decision) holding only the end result and why — never
+ * the whole chain. Commit norm: send the closing thought together
+ * with decision + reason; chains that end without them persist
+ * nothing. */
+#define THINK_MAX_CHAIN 50
+#define THINK_MAX_BRANCHES 32
+#define THINK_MAX_TEXT 8192
+#define THINK_MAX_BRANCH 64
+#define THINK_MAX_DECISION 2048
+#define THINK_MAX_REASON 1024
+
+typedef struct {
+	char *text;
+	long num;
+	long total;
+	int is_rev;
+	long revises;
+	long branch_from;
+	char branch[THINK_MAX_BRANCH];
+} thought_t;
+
+static thought_t think_chain[THINK_MAX_CHAIN];
+static int think_nchain = 0;
+static char think_branches[THINK_MAX_BRANCHES][THINK_MAX_BRANCH];
+static int think_nbranches = 0;
+
+/* Integer coercion mirroring zod's coerce.number().int().min(1):
+ * real JSON integers or all-digit strings, nothing else. */
+static long think_int(jv *args, const char *key, int *bad) {
+	jv *v = args ? jv_get(args, key) : NULL;
+	long out;
+	char *end = NULL;
+	*bad = 0;
+	if (!v) {
+		*bad = 1;
+		return -1;
+	}
+	if (v->t == 2) {
+		double d = v->num;
+		if (d < 1 || d > 9007199254740991.0 || d != (double)(long)d) {
+			*bad = 1;
+			return -1;
+		}
+		return (long)d;
+	}
+	if (v->t == 3 && v->str && v->str[0]) {
+		out = strtol(v->str, &end, 10);
+		if (!end || *end || out < 1) {
+			*bad = 1;
+			return -1;
+		}
+		return out;
+	}
+	*bad = 1;
+	return -1;
+}
+
+static int think_branch_known(const char *b) {
+	int i;
+	for (i = 0; i < think_nbranches; i++) {
+		if (strcmp(think_branches[i], b) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int t_think(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *thought, *branch, *decision, *reason, *pkg, *aa;
+	char author[CREDIT_CAP + 1], dberr[256];
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	prov_t pv;
+	int rc, bi;
+	long tnum, ttotal, rev = 0, bfrom = 0;
+	int is_rev = 0, need_more = 0, bad = 0;
+	thought_t *slot;
+	(void)err;
+	(void)errsz;
+	thought = arg_str(args, "thought");
+	if (!thought || !thought[0] || strlen(thought) > THINK_MAX_TEXT)
+		return -1;
+	if (arg_bool(args, "nextThoughtNeeded", -1) < 0)
+		return -1;
+	tnum = think_int(args, "thoughtNumber", &bad);
+	if (bad)
+		return -1;
+	ttotal = think_int(args, "totalThoughts", &bad);
+	if (bad)
+		return -1;
+	is_rev = arg_bool(args, "isRevision", 0);
+	if (is_rev < 0)
+		return -1;
+	rev = 0;
+	if (is_rev) {
+		if (!jv_get(args, "revisesThought"))
+			return -1;
+		rev = think_int(args, "revisesThought", &bad);
+		if (bad)
+			return -1;
+	} else if (jv_get(args, "revisesThought") != NULL) {
+		rev = think_int(args, "revisesThought", &bad);
+		if (bad)
+			return -1;
+	}
+	bfrom = 0;
+	if (jv_get(args, "branchFromThought") != NULL) {
+		bfrom = think_int(args, "branchFromThought", &bad);
+		if (bad)
+			return -1;
+	}
+	branch = arg_str(args, "branchId");
+	if (!branch || !branch[0])
+		branch = "main";
+	if (strlen(branch) >= THINK_MAX_BRANCH)
+		return -1;
+	need_more = arg_bool(args, "needsMoreThoughts", 0);
+	if (need_more < 0)
+		return -1;
+	decision = arg_str(args, "decision");
+	reason = arg_str(args, "reason");
+	if ((decision && strlen(decision) > THINK_MAX_DECISION) ||
+	    (reason && strlen(reason) > THINK_MAX_REASON))
+		return -1;
+	pkg = arg_str(args, "package");
+	if (!pkg)
+		pkg = "";
+	aa = arg_str(args, "author");
+	if (aa && strlen(aa) > CREDIT_CAP)
+		return -1;
+	if (prov_take(args, &pv) != 0)
+		return -1;
+	resolve_credit(args, author, sizeof author);
+	if (think_nchain >= THINK_MAX_CHAIN) {
+		*is_error = 1;
+		gbuf_adds(text, "chain full (50 thoughts): commit what matters and start a new session\n");
+		prov(text, "session chain (in-process only)");
+		return text->failed ? -1 : 0;
+	}
+	/* Auto-adjust, exactly like the original: the estimate grows
+	 * to fit a thought numbered past it. */
+	if (tnum > ttotal)
+		ttotal = tnum;
+	slot = &think_chain[think_nchain];
+	memset(slot, 0, sizeof *slot);
+	slot->text = strdup(thought);
+	if (!slot->text) {
+		*is_error = 1;
+		gbuf_adds(text, "out of memory recording thought\n");
+		return 0;
+	}
+	slot->num = tnum;
+	slot->total = ttotal;
+	slot->is_rev = is_rev;
+	slot->revises = rev;
+	slot->branch_from = bfrom;
+	snprintf(slot->branch, sizeof slot->branch, "%.63s", branch);
+	think_nchain++;
+	if (bfrom > 0 && !think_branch_known(branch)) {
+		if (think_nbranches >= THINK_MAX_BRANCHES) {
+			free(slot->text);
+			slot->text = NULL;
+			think_nchain--;
+			*is_error = 1;
+			gbuf_adds(text, "too many branches (32): commit what matters and start a new session\n");
+			prov(text, "session chain (in-process only)");
+			return text->failed ? -1 : 0;
+		}
+		snprintf(think_branches[think_nbranches], sizeof think_branches[0], "%.63s", branch);
+		think_nbranches++;
+	}
+	{
+		int i, want_next;
+		char tmp[128];
+		want_next = arg_bool(args, "nextThoughtNeeded", 0);
+		gbuf_adds(text, "{\"thoughtNumber\":");
+		snprintf(tmp, sizeof tmp, "%ld", tnum);
+		gbuf_adds(text, tmp);
+		gbuf_adds(text, ",\"totalThoughts\":");
+		snprintf(tmp, sizeof tmp, "%ld", ttotal);
+		gbuf_adds(text, tmp);
+		gbuf_adds(text, ",\"nextThoughtNeeded\":");
+		gbuf_adds(text, want_next ? "true" : "false");
+		gbuf_adds(text, ",\"branches\":[");
+		for (i = 0; i < think_nbranches; i++) {
+			if (i)
+				gbuf_addch(text, ',');
+			json_escape(text, think_branches[i], strlen(think_branches[i]));
+		}
+		gbuf_adds(text, "],\"thoughtHistoryLength\":");
+		snprintf(tmp, sizeof tmp, "%d", think_nchain);
+		gbuf_adds(text, tmp);
+		if (decision && decision[0] && reason && reason[0]) {
+			char title[256], body[4096], now[21], rcommit[41];
+			long nid = -1;
+			snprintf(title, sizeof title, "%.200s", decision);
+			snprintf(body, sizeof body, "Decision: %.2048s\nReason: %.1024s",
+			         decision, reason);
+			db = db_open_notes(dberr, sizeof dberr);
+			if (db) {
+				utc_now(now);
+				git_recipe_commit(pkg, rcommit);
+				rc = sqlite3_prepare_v2(db,
+				    "INSERT INTO notes(package,kind,title,body,author,recorder,"
+				    "recipe_commit,created_at,"
+				    "session_id,hostname,username,cwd,agent,ctx_origin)"
+				    " VALUES(?1,'decision',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+				    -1, &st, NULL);
+				if (rc == SQLITE_OK) {
+					sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+					sqlite3_bind_text(st, 2, title, -1, SQLITE_TRANSIENT);
+					sqlite3_bind_text(st, 3, body, -1, SQLITE_TRANSIENT);
+					sqlite3_bind_text(st, 4, author, -1, SQLITE_TRANSIENT);
+					sqlite3_bind_text(st, 5, journal_recorder, -1, SQLITE_TRANSIENT);
+					if (rcommit[0])
+						sqlite3_bind_text(st, 6, rcommit, -1, SQLITE_TRANSIENT);
+					else
+						sqlite3_bind_null(st, 6);
+					sqlite3_bind_text(st, 7, now, -1, SQLITE_TRANSIENT);
+					bi = 8;
+					prov_bind(st, &bi, &pv);
+					rc = sqlite3_step(st);
+				}
+				if (rc == SQLITE_DONE)
+					nid = (long long)sqlite3_last_insert_rowid(db);
+				sqlite3_finalize(st);
+				sqlite3_close(db);
+			}
+			if (nid > 0) {
+				gbuf_adds(text, ",\"committedNote\":");
+				snprintf(tmp, sizeof tmp, "%ld", nid);
+				gbuf_adds(text, tmp);
+				fprintf(stderr, "sbm: thought %ld/%ld branch=%s (chain %d, branches %d) committed note %ld\n",
+				        tnum, ttotal, branch, think_nchain, think_nbranches, nid);
+			} else {
+				*is_error = 1;
+				gbuf_adds(text, ",\"commitFailed\":true");
+				fprintf(stderr, "sbm: thought %ld/%ld branch=%s (chain %d, branches %d) commit failed\n",
+				        tnum, ttotal, branch, think_nchain, think_nbranches);
+			}
+		} else {
+			fprintf(stderr, "sbm: thought %ld/%ld branch=%s (chain %d, branches %d)\n",
+			        tnum, ttotal, branch, think_nchain, think_nbranches);
+		}
+		gbuf_adds(text, "}");
+		gbuf_addch(text, '\n');
+	}
+	prov(text, "session chain (in-process; commit a decision to persist)");
+	if (text->failed)
+		return -1;
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* tools.conf extensions                                                */
 /* ------------------------------------------------------------------ */
-/* The 25 built-ins, in historical order. tools_list_json emits
+/* The 26 built-ins, in historical order. tools_list_json emits
  * these (minus expose-offs) followed by registered externals; the
  * no-conf document is the pre-0.8.0 static text plus the tools added
  * since (obligations being the bridge/reconcile surface, foresight
- * the requirements surface). */
+ * the requirements surface, sequential_thinking the native
+ * replacement for the retired Node thinking server). */
 static const struct {
 	const char *name;
 	const char *entry;
@@ -5982,6 +6244,7 @@ static const struct {
 	{ "total_recall", "{\"name\":\"total_recall\",\"description\":\"Search journal history by query or timeline.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"query\",\"timeline\",\"export\"]},\"query\":{\"type\":\"string\"},\"session_id\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"project\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"},\"hostname\":{\"type\":\"string\"},\"username\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\",\"enum\":[\"summary\",\"full\"]},\"budget\":{\"type\":\"string\",\"enum\":[\"compact\",\"standard\",\"extended\",\"deep\"]},\"limit\":{\"type\":\"number\"},\"cursor\":{\"type\":\"string\"}}}}" },
 	{ "obligations", "{\"name\":\"obligations\",\"description\":\"Show outstanding builder work needing attention.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"}}}}" },
 	{ "foresight", "{\"name\":\"foresight\",\"description\":\"Record and consult build requirements before building.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"record\",\"check\",\"retire\"]},\"package\":{\"type\":\"string\"},\"polarity\":{\"type\":\"string\",\"enum\":[\"do\",\"do-not\"]},\"severity\":{\"type\":\"string\",\"enum\":[\"blocker\",\"advisory\"]},\"requirement\":{\"type\":\"string\"},\"evidence\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"},\"id\":{\"type\":\"number\"},\"reason\":{\"type\":\"string\"},\"include_retired\":{\"type\":\"boolean\"}},\"required\":[\"mode\"]}}" },
+	{ "sequential_thinking", "{\"name\":\"sequential_thinking\",\"description\":\"Reason step by step, persisting only the decision.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"thought\":{\"type\":\"string\"},\"nextThoughtNeeded\":{\"type\":\"boolean\"},\"thoughtNumber\":{\"type\":\"number\"},\"totalThoughts\":{\"type\":\"number\"},\"isRevision\":{\"type\":\"boolean\"},\"revisesThought\":{\"type\":\"number\"},\"branchFromThought\":{\"type\":\"number\"},\"branchId\":{\"type\":\"string\"},\"needsMoreThoughts\":{\"type\":\"boolean\"},\"decision\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"}},\"required\":[\"thought\",\"nextThoughtNeeded\",\"thoughtNumber\",\"totalThoughts\"]}}" },
 };
 #define NBASE (int)(sizeof base_tools / sizeof base_tools[0])
 
@@ -6284,6 +6547,8 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
 		return t_obligations(args, text, is_error, err, sizeof err);
 	if (strcmp(name, "foresight") == 0)
 		return t_foresight(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "sequential_thinking") == 0)
+		return t_think(args, text, is_error, err, sizeof err);
 	/* Registered externals: fixed conf argv, no caller arguments. */
 	{
 		ext_conf conf2;

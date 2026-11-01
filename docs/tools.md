@@ -1,4 +1,4 @@
-# Tools reference (v0.10.12, 25 built-ins)
+# Tools reference (v0.10.12, 26 built-ins)
 
 Every section: capability badge, mutation class, parameters (from the
 live `inputSchema`), a valid `tools/call` example, and a **real
@@ -295,6 +295,51 @@ curl -s localhost:8473/call -d '{"tool":"foresight","arguments":{"mode":"check",
 
 ```powershell
 .\mcp-stdio-client.ps1 -Exe .\saphira-build-mcp.windows-builtin.exe -Cmd call -Name foresight -Arguments '{"mode":"check","package":"grub"}'
+```
+
+## `sequential_thinking` — JOURNAL · READ-ONLY + JOURNAL-WRITE
+
+Native replacement for the retired Node sequential-thinking server:
+same parameters, same validation shapes, same JSON response — no
+Node.js runtime. Reason step by step across calls; the chain lives
+in the server process (up to 50 thoughts), newest estimate wins
+when a thought number passes the total. The one addition: pass
+`decision` + `reason` to commit a single journal note holding only
+the end result and why — never the whole chain.
+
+| Param | Required | Notes |
+|---|---|---|
+| `thought` | yes | the current thinking step, ≤8192 chars |
+| `nextThoughtNeeded` | yes | `true`/`false` (strings `"true"`/`"1"` accepted) |
+| `thoughtNumber`, `totalThoughts` | yes | integers ≥ 1 (numeric strings accepted); total auto-grows past thought |
+| `isRevision`, `revisesThought` | no | mark a revision and which thought it reconsiders |
+| `branchFromThought`, `branchId` | no | branch point and branch handle (default `main`) |
+| `needsMoreThoughts` | no | flag that the end needs extending |
+| `decision`, `reason` | no | together, they commit one `decision` note |
+| `package` | no | scope for the committed note; absent means tree-wide |
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sequential_thinking","arguments":{"thought":"check whether libfoo is needed","nextThoughtNeeded":true,"thoughtNumber":1,"totalThoughts":2}}}
+```
+
+```json
+{"content":[{"type":"text","text":"{\"thoughtNumber\":1,\"totalThoughts\":2,\"nextThoughtNeeded\":true,\"branches\":[],\"thoughtHistoryLength\":1}"}],"isError":false}
+```
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sequential_thinking","arguments":{"thought":"libfoo is unneeded; drop it","nextThoughtNeeded":false,"thoughtNumber":2,"totalThoughts":2,"decision":"drop libfoo from makedepends","reason":"nothing links against it","package":"pkg-demo"}}}
+```
+
+```json
+{"content":[{"type":"text","text":"{\"thoughtNumber\":2,\"totalThoughts\":2,\"nextThoughtNeeded\":false,\"branches\":[],\"thoughtHistoryLength\":2,\"committedNote\":1}"}],"isError":false}
+```
+
+```sh
+curl -s localhost:8473/call -d '{"tool":"sequential_thinking","arguments":{"thought":"plan the migration","nextThoughtNeeded":true,"thoughtNumber":1,"totalThoughts":3}}'
+```
+
+```powershell
+.\mcp-stdio-client.ps1 -Exe .\saphira-build-mcp.windows-builtin.exe -Cmd call -Name sequential_thinking -Arguments '{"thought":"plan the migration","nextThoughtNeeded":true,"thoughtNumber":1,"totalThoughts":3}'
 ```
 
 ## `total_recall` — JOURNAL · READ-ONLY
@@ -618,5 +663,5 @@ with `SBM_BUILD=off`:
 ```
 
 There is no "permission denied" code anywhere in the protocol. Count
-the surface instead: default **25**, `SBM_BUILD=off` **23**,
-`SBM_SAPHIRA=off` **14**, both off **12** (the journal eleven, always).
+the surface instead: default **26**, `SBM_BUILD=off` **24**,
+`SBM_SAPHIRA=off` **15**, both off **13** (the journal thirteen, always).

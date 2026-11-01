@@ -268,7 +268,7 @@ t_contains "initialize names server" "$out" '"name":"saphira-build-mcp"'
 out=$(mcp '{"jsonrpc":"2.0","id":2,"method":"ping"}')
 t_contains "ping empty result" "$out" '"result":{}'
 out=$(mcp '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')
-for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness build_request package_bump checkpoint_save checkpoint_resume checkpoint_list checkpoint_close obligations foresight; do
+for tool in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity package_notes_get package_notes_add package_policy_status package_policy_record package_readiness build_request package_bump checkpoint_save checkpoint_resume checkpoint_list checkpoint_close obligations foresight sequential_thinking; do
 	t_contains "tools/list has $tool" "$out" "\"name\":\"$tool\""
 done
 out=$(mcp '{"jsonrpc":"2.0","id":4,"method":"nope"}')
@@ -808,9 +808,9 @@ t_contains "ask lists with prompt schema" "$out" '"required":["prompt"]'
 t_contains "ask describes stdin" "$out" 'External (ask):'
 # the list document must stay machine-readable (a missing brace
 # once shipped broken JSON that substring gates could not catch).
-# 25 built-ins plus the one ask external in this conf.
+# 26 built-ins plus the one ask external in this conf.
 SBM_TOOLS_CONF="$FIX/ext-ask.conf" "$BIN" --list-tools > "$ROOT/tools-list-ask.json"
-t_contains "list-tools ask parses" "$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['tools']))" "$ROOT/tools-list-ask.json" 2>/dev/null || echo PARSE-FAIL)" "26"
+t_contains "list-tools ask parses" "$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['tools']))" "$ROOT/tools-list-ask.json" 2>/dev/null || echo PARSE-FAIL)" "27"
 out=$(SBM_TOOLS_CONF="$FIX/ext-ask.conf" mcp '{"jsonrpc":"2.0","id":237,"method":"tools/call","params":{"name":"ext_ask","arguments":{"prompt":"hello-qwen"}}}')
 t_contains "ask delivers prompt" "$out" 'asked:hello-qwen'
 t_contains "ask exit 0" "$out" '[exit=0'
@@ -912,7 +912,7 @@ export SBM_TSV="$PVOID/accounts.tsv" SBM_PASSWD="$PVOID/passwd"
 export SBM_GROUP="$PVOID/group" SBM_APKDB="$PVOID/installed.db"
 export SBM_TOOLS_CONF="$PVOID/no-such.conf"
 out=$("$BIN" --list-tools)
-for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness obligations foresight; do
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness obligations foresight sequential_thinking; do
 	t_contains "portable list keeps $n" "$out" "\"name\":\"$n\""
 done
 for n in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity; do
@@ -969,7 +969,7 @@ export SBM_GROUP="$FIX/group" SBM_APKDB="$FIX/installed.db"
 # two privileged mutations refuse as unknown. Inline env keeps this
 # block self-contained (nothing leaks past it).
 out=$(SBM_BUILD=off SBM_TOOLS_CONF="$FIX/no-such.conf" "$BIN" --list-tools)
-for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness package_search package_info build_queue obligations foresight; do
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness package_search package_info build_queue obligations foresight sequential_thinking; do
 	t_contains "build-off keeps $n" "$out" "\"name\":\"$n\""
 done
 for n in build_request package_bump; do
@@ -985,7 +985,7 @@ t_not_contains "build-off journal works" "$out" '"code":-32602'
 # journal set (4 checkpoints + 2 notes + total_recall + 3 policy +
 # foresight).
 out=$(SBM_BUILD=off SBM_SAPHIRA=off SBM_TOOLS_CONF="$FIX/no-such.conf" "$BIN" --list-tools)
-for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness obligations foresight; do
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness obligations foresight sequential_thinking; do
 	t_contains "locked-down keeps $n" "$out" "\"name\":\"$n\""
 done
 for n in package_search build_queue build_request package_bump; do
@@ -1021,7 +1021,7 @@ print("builtins: %d" % n)
 print("bad: %s" % (" ".join(bad) if bad else "none"))
 EOF
 )
-t_contains "tool intros count" "$out" "builtins: 25"
+t_contains "tool intros count" "$out" "builtins: 26"
 t_contains "tool intros 5-10 words" "$out" "bad: none"
 
 # --- foresight: record + consult build requirements --------------------
@@ -1099,6 +1099,41 @@ t_contains "build status shows foresight" "$out" "foresight (blockers first"
 EMPTYJ=$ROOT/empty-req.db
 out=$(SBM_NOTES_DB="$EMPTYJ" mcp '{"jsonrpc":"2.0","id":432,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a","reason":"silent reader probe"}}}')
 t_not_contains "reader silent when none apply" "$out" "foresight (blockers first"
+
+# --- sequential_thinking: chain + commit in one session ----------------
+# The chain lives in the server process, so all steps of one chain go
+# through a single mcp invocation (multiple lines, one process).
+out=$(mcp \
+ '{"jsonrpc":"2.0","id":500,"method":"tools/call","params":{"name":"sequential_thinking","arguments":{"thought":"check whether libfoo is needed","nextThoughtNeeded":true,"thoughtNumber":1,"totalThoughts":2}}}' \
+ '{"jsonrpc":"2.0","id":501,"method":"tools/call","params":{"name":"sequential_thinking","arguments":{"thought":"libfoo is unneeded; drop it","nextThoughtNeeded":true,"thoughtNumber":2,"totalThoughts":2,"isRevision":true,"revisesThought":1}}}' \
+ '{"jsonrpc":"2.0","id":502,"method":"tools/call","params":{"name":"sequential_thinking","arguments":{"thought":"final: drop libfoo","nextThoughtNeeded":false,"thoughtNumber":3,"totalThoughts":2,"branchFromThought":1,"branchId":"drop-it","decision":"drop libfoo from makedepends","reason":"nothing links against it","package":"pkg-t"}}}')
+t_contains "think chain grows" "$out" '\"thoughtHistoryLength\":3'
+t_contains "think auto-grows total" "$out" '\"totalThoughts\":3'
+t_contains "think branch tracked" "$out" '\"branches\":[\"drop-it\"]'
+t_contains "think commits decision" "$out" '\"committedNote\":'
+body=$(sqlite3 "$FIX/notes.db" "SELECT body FROM notes WHERE package='pkg-t' ORDER BY id DESC LIMIT 1;")
+t_contains "think note holds decision" "$body" "Decision: drop libfoo from makedepends"
+t_contains "think note holds reason" "$body" "Reason: nothing links against it"
+t_not_contains "think note omits chain" "$body" "check whether libfoo"
+out=$(mcp '{"jsonrpc":"2.0","id":510,"method":"tools/call","params":{"name":"sequential_thinking","arguments":{"nextThoughtNeeded":true,"thoughtNumber":1,"totalThoughts":2}}}')
+t_contains "think missing thought rejected" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":511,"method":"tools/call","params":{"name":"sequential_thinking","arguments":{"thought":"x","nextThoughtNeeded":true,"thoughtNumber":0,"totalThoughts":2}}}')
+t_contains "think zero thought rejected" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":512,"method":"tools/call","params":{"name":"sequential_thinking","arguments":{"thought":"x","nextThoughtNeeded":"maybe","thoughtNumber":1,"totalThoughts":2}}}')
+t_contains "think bad bool rejected" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":513,"method":"tools/call","params":{"name":"sequential_thinking","arguments":{"thought":"string numbers coerce","nextThoughtNeeded":"true","thoughtNumber":"1","totalThoughts":"2"}}}')
+t_contains "think string numbers accepted" "$out" '\"thoughtHistoryLength\":1'
+big=$(python3 -c "print('x'*9000)")
+out=$(mcp '{"jsonrpc":"2.0","id":514,"method":"tools/call","params":{"name":"sequential_thinking","arguments":{"thought":"'"$big"'","nextThoughtNeeded":true,"thoughtNumber":1,"totalThoughts":1}}}')
+t_contains "think oversize rejected" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":515,"method":"tools/call","params":{"name":"sequential_thinking","arguments":{"thought":"uncommitted end","nextThoughtNeeded":false,"thoughtNumber":1,"totalThoughts":1,"decision":"only half"}}}' )
+t_contains "think decision without reason persists nothing" "$out" '"isError":false'
+t_not_contains "think no commit without reason" "$out" 'committedNote'
+seq_out=$(python3 -c "import json
+for i in range(1,52):
+    print(json.dumps({'jsonrpc':'2.0','id':600+i,'method':'tools/call','params':{'name':'sequential_thinking','arguments':{'thought':'step %d of cap probe'%i,'nextThoughtNeeded':True,'thoughtNumber':i,'totalThoughts':60}}}))" | "$BIN" --mcp 2>/dev/null)
+t_contains "think chain accepts fifty" "$seq_out" '\"thoughtHistoryLength\":50'
+t_contains "think chain caps at fifty" "$seq_out" 'chain full (50 thoughts)'
 
 # --- framing: every stdout line is valid JSON ---------------------------
 mcp '{"jsonrpc":"2.0","id":30,"method":"tools/list"}' '{"jsonrpc":"2.0","id":31,"method":"ping"}' > "$ROOT/frames.txt"
