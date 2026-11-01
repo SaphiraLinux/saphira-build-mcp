@@ -5516,12 +5516,184 @@ static int t_total_recall(jv *args, gbuf *text, int *is_error, char *err, size_t
 }
 
 /* ------------------------------------------------------------------ */
+/* foresight: build requirements, record + consult                      */
+/* ------------------------------------------------------------------ */
+/* Focused do / do-not requirements distilled from previous mistakes,
+ * consulted before building so history does not repeat. One tool,
+ * two modes: record stores a requirement (package-scoped, or
+ * tree-wide when package is absent); check lists what applies to a
+ * package, tree-wide rows included. Append-only: corrections are new
+ * rows, newest first. This is not a lessons store: lessons preserve
+ * what was learned, requirements state what a future build must (or
+ * must not) do. */
+#define FORE_REQ_CAP 1024
+#define FORE_EVI_CAP 512
+
+static int fore_polarity_ok(const char *p) {
+	return strcmp(p, "do") == 0 || strcmp(p, "do-not") == 0;
+}
+
+static int t_foresight(jv *args, gbuf *text, int *is_error, char *err, size_t errsz) {
+	const char *mode, *pkg, *pol, *req, *evi, *aa;
+	char author[CREDIT_CAP + 1], dberr[256], now[21], rcommit[41];
+	sqlite3 *db = NULL;
+	sqlite3_stmt *st = NULL;
+	prov_t pv;
+	int rc, bi;
+	long limit;
+	int bad = 0;
+	(void)err;
+	(void)errsz;
+	mode = arg_str(args, "mode");
+	if (!mode || (strcmp(mode, "record") != 0 && strcmp(mode, "check") != 0))
+		return -1;
+	pkg = arg_str(args, "package");
+	if (!pkg)
+		pkg = "";
+	limit = clamp_long(arg_long(args, "limit", 20, &bad), 1, 200);
+	if (bad)
+		return -1;
+	aa = arg_str(args, "author");
+	if (aa && strlen(aa) > CREDIT_CAP)
+		return -1;
+	if (prov_take(args, &pv) != 0)
+		return -1;
+	resolve_credit(args, author, sizeof author);
+	db = db_open_notes(dberr, sizeof dberr);
+	if (!db) {
+		*is_error = 1;
+		gbuf_adds(text, "journal unavailable: ");
+		gbuf_adds(text, dberr);
+		gbuf_addch(text, '\n');
+		prov(text, "notes.db (local journal)");
+		return 0;
+	}
+	if (strcmp(mode, "record") == 0) {
+		pol = arg_str(args, "polarity");
+		req = arg_str(args, "requirement");
+		evi = arg_str(args, "evidence");
+		if (!pol || !fore_polarity_ok(pol) || !req || !req[0])
+			return -1;
+		if (!evi)
+			evi = "";
+		if (strlen(req) > FORE_REQ_CAP || strlen(evi) > FORE_EVI_CAP)
+			return -1;
+		utc_now(now);
+		git_recipe_commit(pkg, rcommit);
+		rc = sqlite3_prepare_v2(db,
+		    "INSERT INTO requirements(package,polarity,requirement,evidence,"
+		    "author,recorder,recipe_commit,created_at,"
+		    "session_id,hostname,username,cwd,agent,ctx_origin)"
+		    " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)", -1, &st, NULL);
+		if (rc == SQLITE_OK) {
+			sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 2, pol, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 3, req, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 4, evi, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 5, author, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 6, journal_recorder, -1, SQLITE_TRANSIENT);
+			if (rcommit[0])
+				sqlite3_bind_text(st, 7, rcommit, -1, SQLITE_TRANSIENT);
+			else
+				sqlite3_bind_null(st, 7);
+			sqlite3_bind_text(st, 8, now, -1, SQLITE_TRANSIENT);
+			bi = 9;
+			prov_bind(st, &bi, &pv);
+			rc = sqlite3_step(st);
+		}
+		if (rc == SQLITE_DONE) {
+			char tmp[160];
+			snprintf(tmp, sizeof tmp, "recorded requirement %lld [%s] for ",
+			         (long long)sqlite3_last_insert_rowid(db), pol);
+			gbuf_adds(text, tmp);
+			gbuf_adds(text, pkg[0] ? pkg : "tree-wide");
+			gbuf_adds(text, " by ");
+			gbuf_adds(text, author);
+			gbuf_addch(text, '\n');
+		} else {
+			*is_error = 1;
+			gbuf_adds(text, "journal write failed\n");
+		}
+		sqlite3_finalize(st);
+		sqlite3_close(db);
+		prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+		if (text->failed)
+			return -1;
+		return 0;
+	}
+	{
+		int shown = 0;
+		gbuf_adds(text, "requirements for ");
+		gbuf_adds(text, pkg[0] ? pkg : "tree-wide");
+		gbuf_adds(text, " (tree-wide included):\n");
+		if (sqlite3_prepare_v2(db,
+		    "SELECT id,package,polarity,requirement,evidence,author,recorder,"
+		    "recipe_commit,created_at,agent,ctx_origin"
+		    " FROM requirements WHERE (package=?1 OR package='')"
+		    " ORDER BY id DESC LIMIT ?2", -1, &st, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(st, 1, pkg, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_int(st, 2, (int)limit);
+			while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+				char tmp[64];
+				const char *scope =
+				    (const char *)sqlite3_column_text(st, 1);
+				const char *rq =
+				    (const char *)sqlite3_column_text(st, 3);
+				const char *ev =
+				    (const char *)sqlite3_column_text(st, 4);
+				const char *at =
+				    (const char *)sqlite3_column_text(st, 8);
+				snprintf(tmp, sizeof tmp, "[%lld] ",
+				         (long long)sqlite3_column_int64(st, 0));
+				gbuf_adds(text, "  ");
+				gbuf_adds(text, tmp);
+				sb_cell(text, st, 2);
+				gbuf_adds(text, " (");
+				gbuf_adds(text, (scope && scope[0]) ? scope : "tree-wide");
+				gbuf_adds(text, "): ");
+				if (rq)
+					gbuf_adds(text, rq);
+				gbuf_addch(text, '\n');
+				if (ev && ev[0]) {
+					gbuf_adds(text, "    evidence: ");
+					gbuf_adds(text, ev);
+					gbuf_addch(text, '\n');
+				}
+				gbuf_adds(text, "    by ");
+				sb_cell(text, st, 5);
+				gbuf_adds(text, " at ");
+				if (at)
+					gbuf_adds(text, at);
+				else
+					gbuf_adds(text, "-");
+				gbuf_addch(text, '\n');
+				shown++;
+			}
+		}
+		sqlite3_finalize(st);
+		sqlite3_close(db);
+		if (!shown)
+			gbuf_adds(text, "(no recorded requirements; record the constraint before it repeats)\n");
+		else {
+			char tmp[64];
+			snprintf(tmp, sizeof tmp, "(showing %d)\n", shown);
+			gbuf_adds(text, tmp);
+		}
+		prov(text, "notes.db (local journal; recorder is client-reported, unverified)");
+		if (text->failed)
+			return -1;
+		return 0;
+	}
+}
+
+/* ------------------------------------------------------------------ */
 /* tools.conf extensions                                                */
 /* ------------------------------------------------------------------ */
-/* The 24 built-ins, in historical order. tools_list_json emits
+/* The 25 built-ins, in historical order. tools_list_json emits
  * these (minus expose-offs) followed by registered externals; the
  * no-conf document is the pre-0.8.0 static text plus the tools added
- * since (obligations being the bridge/reconcile surface). */
+ * since (obligations being the bridge/reconcile surface, foresight
+ * the requirements surface). */
 static const struct {
 	const char *name;
 	const char *entry;
@@ -5550,6 +5722,7 @@ static const struct {
 	{ "checkpoint_close", "{\"name\":\"checkpoint_close\",\"description\":\"Retire a finished checkpoint preserving history.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"number\"}},\"required\":[\"id\"]}}" },
 	{ "total_recall", "{\"name\":\"total_recall\",\"description\":\"Search journal history by query or timeline.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"query\",\"timeline\",\"export\"]},\"query\":{\"type\":\"string\"},\"session_id\":{\"type\":\"string\"},\"package\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"project\":{\"type\":\"string\"},\"author\":{\"type\":\"string\"},\"hostname\":{\"type\":\"string\"},\"username\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\",\"enum\":[\"summary\",\"full\"]},\"budget\":{\"type\":\"string\",\"enum\":[\"compact\",\"standard\",\"extended\",\"deep\"]},\"limit\":{\"type\":\"number\"},\"cursor\":{\"type\":\"string\"}}}}" },
 	{ "obligations", "{\"name\":\"obligations\",\"description\":\"Show outstanding builder work needing attention.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"}}}}" },
+	{ "foresight", "{\"name\":\"foresight\",\"description\":\"Record and consult build requirements before building.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"record\",\"check\"]},\"package\":{\"type\":\"string\"},\"polarity\":{\"type\":\"string\",\"enum\":[\"do\",\"do-not\"]},\"requirement\":{\"type\":\"string\"},\"evidence\":{\"type\":\"string\"},\"limit\":{\"type\":\"number\"}},\"required\":[\"mode\"]}}" },
 };
 #define NBASE (int)(sizeof base_tools / sizeof base_tools[0])
 
@@ -5850,6 +6023,8 @@ int tools_call(const char *name, jv *args, gbuf *text, int *is_error) {
 		return t_total_recall(args, text, is_error, err, sizeof err);
 	if (strcmp(name, "obligations") == 0)
 		return t_obligations(args, text, is_error, err, sizeof err);
+	if (strcmp(name, "foresight") == 0)
+		return t_foresight(args, text, is_error, err, sizeof err);
 	/* Registered externals: fixed conf argv, no caller arguments. */
 	{
 		ext_conf conf2;

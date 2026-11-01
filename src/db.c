@@ -87,6 +87,19 @@ static const char *notes_schema_sql =
     "timed_out INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,"
     PROV_COLS ");"
     "CREATE INDEX IF NOT EXISTS idx_tool_runs_tool ON tool_runs(tool,id);"
+    /* Build requirements (foresight): focused do / do-not constraints
+     * distilled from previous mistakes, consulted before building so
+     * history does not repeat. Append-only: corrections are new rows.
+     * package '' means tree-wide. This is not a lessons store:
+     * lessons preserve what was learned, requirements state what a
+     * future build must (or must not) do. */
+    "CREATE TABLE IF NOT EXISTS requirements("
+    "id INTEGER PRIMARY KEY,package TEXT NOT NULL DEFAULT '',"
+    "polarity TEXT NOT NULL,requirement TEXT NOT NULL,"
+    "evidence TEXT NOT NULL DEFAULT '',"
+    "author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',"
+    "recipe_commit TEXT,created_at TEXT NOT NULL," PROV_COLS ");"
+    "CREATE INDEX IF NOT EXISTS idx_requirements_pkg ON requirements(package,id);"
     /* Phase-2 seam: the session-event journal exists from the start
      * (empty until a writer lands) so transcript capture later plugs
      * into the same retrieval index with no redesign. */

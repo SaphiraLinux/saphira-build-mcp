@@ -25,16 +25,17 @@ With
 .B --list-tools
 it prints the tools/list document (also the build-time self-check).
 .SH TOOLS
-Twenty-four tools. Eighteen are read-only: package_search,
+Twenty-five tools. Eighteen are read-only: package_search,
 package_info, package_dependencies, package_why_installed,
 package_installed, package_build_status, package_build_history,
 package_build_log, package_artifacts, build_queue,
 package_identity, package_notes_get, package_policy_status,
 package_readiness, checkpoint_resume, checkpoint_list,
-total_recall, obligations. Six take
+total_recall, obligations. Seven take
 action with deliberately narrow authority: package_notes_add,
 package_policy_record, checkpoint_save and checkpoint_close write
-only to the journal; build_request queues through the daemon intake
+only to the journal; foresight records and consults build
+requirements in the journal; build_request queues through the daemon intake
 (the daemon executes detached, the MCP never runs buildpkg);
 package_bump runs bumppkg guards and all. None can sign, publish
 or install: a staged row names the exact human-gated ask

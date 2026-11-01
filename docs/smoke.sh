@@ -27,29 +27,31 @@ names() { # $1 = extra env assignments, $2 = expected count
 count() { names "$1" | wc -l | tr -d ' '; }
 
 # 1. capability matrices (docs/mcp-protocol.md, docs/tools.md footer)
-[ "$(count '')" = "24" ] || fail "default tool count"
+[ "$(count '')" = "25" ] || fail "default tool count"
 names '' | grep -qx total_recall || fail "total_recall missing"
 names '' | grep -qx obligations || fail "obligations missing"
-[ "$(count 'SBM_BUILD=off')" = "22" ] || fail "build-off count"
+names '' | grep -qx foresight || fail "foresight missing"
+[ "$(count 'SBM_BUILD=off')" = "23" ] || fail "build-off count"
 names 'SBM_BUILD=off' | grep -qx build_request && fail "build_request leaks with build off"
-[ "$(count 'SBM_SAPHIRA=off')" = "13" ] || fail "portable count"
+[ "$(count 'SBM_SAPHIRA=off')" = "14" ] || fail "portable count"
 LOCKED=$(names 'SBM_SAPHIRA=off SBM_BUILD=off')
-[ "$(printf '%s\n' "$LOCKED" | wc -l | tr -d ' ')" = "11" ] || fail "locked-down count"
+[ "$(printf '%s\n' "$LOCKED" | wc -l | tr -d ' ')" = "12" ] || fail "locked-down count"
 for t in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close \
   package_notes_get package_notes_add total_recall package_policy_status \
-  package_policy_record package_readiness obligations; do
+  package_policy_record package_readiness obligations foresight; do
   printf '%s\n' "$LOCKED" | grep -qx "$t" || fail "locked-down missing $t"
 done
-pass "capability matrices 24/22/13/11"
+pass "capability matrices 25/23/14/12"
 "$BIN" --list-tools >/dev/null 2>&1 || fail "--list-tools exit"
 SBM_SAPHIRA=bogus "$BIN" --list-tools >/dev/null 2>&1 && fail "bogus SBM_SAPHIRA accepted"
 SBM_BUILD=bogus "$BIN" --list-tools >/dev/null 2>&1 && fail "bogus SBM_BUILD accepted"
 pass "invalid capability values fail"
 
-# 2. malformed conf disables extensions, keeps built-ins (docs/external-tools.md)
+# 2. malformed conf: the bad line is skipped, the rest keeps working;
+# built-ins unaffected (docs/external-tools.md).
 printf 'this is not a directive\n' > "$TMP/bad.conf"
 [ "$(SBM_TOOLS_CONF="$TMP/bad.conf" "$BIN" --list-tools 2>/dev/null |
-  python3 -c "import json,sys; print(len(json.load(sys.stdin)['tools']))")" = "24" ] \
+  python3 -c "import json,sys; print(len(json.load(sys.stdin)['tools']))")" = "25" ] \
   || fail "malformed conf changed built-ins"
 pass "malformed conf keeps built-ins only"
 
@@ -61,7 +63,7 @@ if command -v git >/dev/null 2>&1; then
     python3 -c "import json,sys; print('\n'.join(t['name'] for t in json.load(sys.stdin)['tools']))")
   printf '%s\n' "$EXT" | grep -qx smoke_git || fail "external not listed"
   printf '%s\n' "$EXT" | grep -qx build_queue && fail "expose off ignored"
-  [ "$(printf '%s\n' "$EXT" | wc -l | tr -d ' ')" = "24" ] || fail "expose+external count"
+  [ "$(printf '%s\n' "$EXT" | wc -l | tr -d ' ')" = "25" ] || fail "expose+external count"
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"smoke_git","arguments":{}}}' |
     SBM_TOOLS_CONF="$TMP/good.conf" "$BIN" --mcp 2>/dev/null |
     grep -q '"isError":false' || fail "external git call failed"
@@ -108,7 +110,7 @@ pass "checkpoint save/resume/recall/close roundtrip"
 # two JSON documents (init object, then the name array); parse both.
 python3 docs/examples/mcp-stdio-client.py --exe "$BIN" list 2>"$TMP/client.err" >"$TMP/client.out"
 N=$(python3 -c "import json,sys; d=json.JSONDecoder(); s=open('$TMP/client.out').read(); _,i=d.raw_decode(s); print(len(d.raw_decode(s[i:].strip())[0]))" 2>"$TMP/client.parse-err" || echo PARSE-FAIL)
-[ "$N" = "24" ] || { echo "--- client.out head:"; head -c 400 "$TMP/client.out"; echo; echo "--- client.err:"; head -c 400 "$TMP/client.err"; echo; echo "--- parse-err:"; head -c 300 "$TMP/client.parse-err"; fail "python client list (got $N)"; }
+[ "$N" = "25" ] || { echo "--- client.out head:"; head -c 400 "$TMP/client.out"; echo; echo "--- client.err:"; head -c 400 "$TMP/client.err"; echo; echo "--- parse-err:"; head -c 300 "$TMP/client.parse-err"; fail "python client list (got $N)"; }
 pass "python stdio client"
 
 # 8. http bridge + curl (docs/http-and-curl.md)
@@ -118,7 +120,7 @@ if command -v curl >/dev/null 2>&1; then
   BRIDGEPID=$!
   sleep 1
   [ "$(curl -s localhost:8479/health | python3 -c "import json,sys; print(json.load(sys.stdin)['ok'])" 2>/dev/null)" = "True" ] || fail "bridge health"
-  [ "$(curl -s localhost:8479/list | python3 -c "import json,sys; print(len(json.load(sys.stdin)['tools']))" 2>/dev/null)" = "24" ] || fail "bridge list"
+  [ "$(curl -s localhost:8479/list | python3 -c "import json,sys; print(len(json.load(sys.stdin)['tools']))" 2>/dev/null)" = "25" ] || fail "bridge list"
   curl -s localhost:8479/call -d '{"tool":"checkpoint_list","arguments":{"limit":1}}' |
     grep -q '"ok": true' || fail "bridge call"
   curl -s localhost:8479/call -d '{"tool":"no_such_tool","arguments":{}}' |
@@ -134,14 +136,14 @@ fi
 for t in $(names ''); do
   grep -q "\`$t\`" docs/tools.md || fail "tools.md missing $t"
 done
-[ "$(grep -c 'localhost:8473/call' docs/tools.md)" -ge 24 ] || fail "tools.md curl coverage"
-[ "$(grep -c 'mcp-stdio-client.ps1' docs/tools.md)" -ge 24 ] || fail "tools.md powershell coverage"
+[ "$(grep -c 'localhost:8473/call' docs/tools.md)" -ge 25 ] || fail "tools.md curl coverage"
+[ "$(grep -c 'mcp-stdio-client.ps1' docs/tools.md)" -ge 25 ] || fail "tools.md powershell coverage"
 for f in docs/mcp-protocol.md docs/tools.md docs/jsonrpc-examples.md docs/http-and-curl.md \
   docs/recovery.md docs/windows.md docs/external-tools.md docs/ssh-remote.md \
   docs/examples/mcp-stdio-client.py docs/examples/mcp-stdio-client.ps1 \
   docs/examples/stdio-http-bridge.py; do
   [ -f "$f" ] || fail "missing $f"
 done
-pass "docs structural coverage (24 tools x curl x powershell)"
+pass "docs structural coverage (25 tools x curl x powershell)"
 
 echo "DOCS-SMOKE: ALL GREEN"

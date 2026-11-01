@@ -808,8 +808,9 @@ t_contains "ask lists with prompt schema" "$out" '"required":["prompt"]'
 t_contains "ask describes stdin" "$out" 'External (ask):'
 # the list document must stay machine-readable (a missing brace
 # once shipped broken JSON that substring gates could not catch).
+# 25 built-ins plus the one ask external in this conf.
 SBM_TOOLS_CONF="$FIX/ext-ask.conf" "$BIN" --list-tools > "$ROOT/tools-list-ask.json"
-t_contains "list-tools ask parses" "$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['tools']))" "$ROOT/tools-list-ask.json" 2>/dev/null || echo PARSE-FAIL)" "25"
+t_contains "list-tools ask parses" "$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['tools']))" "$ROOT/tools-list-ask.json" 2>/dev/null || echo PARSE-FAIL)" "26"
 out=$(SBM_TOOLS_CONF="$FIX/ext-ask.conf" mcp '{"jsonrpc":"2.0","id":237,"method":"tools/call","params":{"name":"ext_ask","arguments":{"prompt":"hello-qwen"}}}')
 t_contains "ask delivers prompt" "$out" 'asked:hello-qwen'
 t_contains "ask exit 0" "$out" '[exit=0'
@@ -911,7 +912,7 @@ export SBM_TSV="$PVOID/accounts.tsv" SBM_PASSWD="$PVOID/passwd"
 export SBM_GROUP="$PVOID/group" SBM_APKDB="$PVOID/installed.db"
 export SBM_TOOLS_CONF="$PVOID/no-such.conf"
 out=$("$BIN" --list-tools)
-for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness obligations; do
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness obligations foresight; do
 	t_contains "portable list keeps $n" "$out" "\"name\":\"$n\""
 done
 for n in package_search package_info package_dependencies package_why_installed package_installed package_build_status package_build_history package_build_log package_artifacts build_queue package_identity; do
@@ -968,7 +969,7 @@ export SBM_GROUP="$FIX/group" SBM_APKDB="$FIX/installed.db"
 # two privileged mutations refuse as unknown. Inline env keeps this
 # block self-contained (nothing leaks past it).
 out=$(SBM_BUILD=off SBM_TOOLS_CONF="$FIX/no-such.conf" "$BIN" --list-tools)
-for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness package_search package_info build_queue obligations; do
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness package_search package_info build_queue obligations foresight; do
 	t_contains "build-off keeps $n" "$out" "\"name\":\"$n\""
 done
 for n in build_request package_bump; do
@@ -981,9 +982,10 @@ t_contains "build-off bump unknown" "$out" '"code":-32602'
 out=$(SBM_BUILD=off mcp '{"jsonrpc":"2.0","id":322,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{}}}')
 t_not_contains "build-off journal works" "$out" '"code":-32602'
 # combined: no builder state and no build permission leaves the
-# journal set (4 checkpoints + 2 notes + total_recall + 3 policy).
+# journal set (4 checkpoints + 2 notes + total_recall + 3 policy +
+# foresight).
 out=$(SBM_BUILD=off SBM_SAPHIRA=off SBM_TOOLS_CONF="$FIX/no-such.conf" "$BIN" --list-tools)
-for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness obligations; do
+for n in checkpoint_save checkpoint_resume checkpoint_list checkpoint_close package_notes_get package_notes_add total_recall package_policy_status package_policy_record package_readiness obligations foresight; do
 	t_contains "locked-down keeps $n" "$out" "\"name\":\"$n\""
 done
 for n in package_search build_queue build_request package_bump; do
@@ -1019,8 +1021,29 @@ print("builtins: %d" % n)
 print("bad: %s" % (" ".join(bad) if bad else "none"))
 EOF
 )
-t_contains "tool intros count" "$out" "builtins: 24"
+t_contains "tool intros count" "$out" "builtins: 25"
 t_contains "tool intros 5-10 words" "$out" "bad: none"
+
+# --- foresight: record + consult build requirements --------------------
+out=$(mcp '{"jsonrpc":"2.0","id":399,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-a"}}}')
+t_contains "foresight empty check honest" "$out" '(no recorded requirements'
+out=$(mcp '{"jsonrpc":"2.0","id":400,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do-not","requirement":"never place runtime libraries under /usr/lib64","evidence":"build 5935","package":"pkg-a"}}}')
+t_contains "foresight record scoped" "$out" "recorded requirement 1 [do-not] for pkg-a"
+out=$(mcp '{"jsonrpc":"2.0","id":401,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do","requirement":"check accounts.tsv first"}}}')
+t_contains "foresight record tree-wide" "$out" "recorded requirement 2 [do] for tree-wide"
+out=$(mcp '{"jsonrpc":"2.0","id":402,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-a"}}}')
+t_contains "foresight check scoped" "$out" '[1] do-not (pkg-a)'
+t_contains "foresight check includes tree-wide" "$out" '[2] do (tree-wide)'
+t_contains "foresight check evidence" "$out" 'evidence: build 5935'
+out=$(mcp '{"jsonrpc":"2.0","id":403,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-b"}}}')
+t_contains "foresight check other package tree-wide" "$out" '[2] do (tree-wide)'
+t_not_contains "foresight check excludes scoped" "$out" '[1] do-not (pkg-a)'
+out=$(mcp '{"jsonrpc":"2.0","id":404,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"maybe","requirement":"x"}}}')
+t_contains "foresight bad polarity rejected" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":405,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do"}}}')
+t_contains "foresight missing requirement rejected" "$out" '"code":-32602'
+out=$(mcp '{"jsonrpc":"2.0","id":406,"method":"tools/call","params":{"name":"foresight","arguments":{}}}')
+t_contains "foresight missing mode rejected" "$out" '"code":-32602'
 
 # --- framing: every stdout line is valid JSON ---------------------------
 mcp '{"jsonrpc":"2.0","id":30,"method":"tools/list"}' '{"jsonrpc":"2.0","id":31,"method":"ping"}' > "$ROOT/frames.txt"

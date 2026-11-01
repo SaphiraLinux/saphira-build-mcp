@@ -433,8 +433,8 @@ Orchestration & Operations) — https://shampoo.op2.uk. Free
 distribution does not by itself grant unrestricted commercial
 rights; the licence terms govern.
 
-Twenty-four built-ins in full mode (eighteen read-only plus
-six narrowly-scoped actions), ten in journal-only mode
+Twenty-five built-ins in full mode (eighteen read-only plus
+seven narrowly-scoped actions), eleven in journal-only mode
 (checkpoints, notes, policy tools, readiness, total_recall),
 plus any `/etc/saphira/mcp/tools.conf` externals (see below).
 Gated-off tools vanish from `tools/list` and refuse calls as
@@ -486,7 +486,7 @@ re-executes them):
 
 - `docs/mcp-protocol.md` — JSON-RPC 2.0 over stdio, framing, methods,
   error catalogue, capabilities.
-- `docs/tools.md` — all 24 tools: params, real call/response pairs,
+- `docs/tools.md` — all 25 tools: params, real call/response pairs,
   and a curl + PowerShell form per tool.
 - `docs/jsonrpc-examples.md` — printf/pipe/Python sessions without
   any agent platform.

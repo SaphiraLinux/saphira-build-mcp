@@ -1,4 +1,4 @@
-# Tools reference (v0.10.12, 24 built-ins)
+# Tools reference (v0.10.12, 25 built-ins)
 
 Every section: capability badge, mutation class, parameters (from the
 live `inputSchema`), a valid `tools/call` example, and a **real
@@ -237,6 +237,50 @@ curl -s localhost:8473/call -d '{"tool":"obligations","arguments":{"package":"lv
 
 ```powershell
 .\mcp-stdio-client.ps1 -Exe .\saphira-build-mcp.windows-builtin.exe -Cmd call -Name obligations -Arguments '{"package":"grub"}'
+```
+
+## `foresight` — JOURNAL · READ-ONLY + JOURNAL-WRITE
+
+Record and consult build requirements before building. Two modes:
+`record` stores one focused do / do-not requirement (package-scoped,
+or tree-wide when `package` is absent); `check` lists what applies
+to a package, tree-wide rows included. Append-only: corrections are
+new rows, newest first. This is not a lessons store: lessons
+preserve what was learned, requirements state what a future build
+must (or must not) do.
+
+| Param | Required | Notes |
+|---|---|---|
+| `mode` | yes | `record` or `check` |
+| `polarity` | record only | `do` or `do-not` |
+| `requirement` | record only | the focused constraint, ≤1024 chars |
+| `evidence` | no | pointer to the past mistake (note id, build id, commit) |
+| `package` | no | scope; absent means tree-wide |
+| `limit` | no | check page size, default 20 |
+| `author`, `session_id`, `hostname`, `username`, `cwd`, `agent` | no | provenance overrides (else server-observed) |
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"record","polarity":"do-not","requirement":"never place runtime libraries under /usr/lib64","evidence":"build 5935","package":"grub"}}}
+```
+
+```json
+{"content":[{"type":"text","text":"recorded requirement 1 [do-not] for grub by docgen\n\n[src: ...]"}],"isError":false}
+```
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"grub"}}}
+```
+
+```json
+{"content":[{"type":"text","text":"requirements for grub (tree-wide included):\n  [2] do (tree-wide): check accounts.tsv first; a change means rebuild saphira-packager and upgrade it on the host\n  [1] do-not (grub): never place runtime libraries under /usr/lib64\n..."} }],"isError":false}
+```
+
+```sh
+curl -s localhost:8473/call -d '{"tool":"foresight","arguments":{"mode":"check","package":"grub"}}'
+```
+
+```powershell
+.\mcp-stdio-client.ps1 -Exe .\saphira-build-mcp.windows-builtin.exe -Cmd call -Name foresight -Arguments '{"mode":"check","package":"grub"}'
 ```
 
 ## `total_recall` — JOURNAL · READ-ONLY
@@ -560,5 +604,5 @@ with `SBM_BUILD=off`:
 ```
 
 There is no "permission denied" code anywhere in the protocol. Count
-the surface instead: default **23**, `SBM_BUILD=off` **21**,
-`SBM_SAPHIRA=off` **12**, both off **10** (the journal ten, always).
+the surface instead: default **25**, `SBM_BUILD=off` **23**,
+`SBM_SAPHIRA=off` **14**, both off **12** (the journal eleven, always).
