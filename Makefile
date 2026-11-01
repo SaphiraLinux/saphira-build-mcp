@@ -13,7 +13,20 @@ else
 endif
 STATIC   ?= $(STATIC_DEFAULT)
 ifeq ($(STATIC),1)
+# Static libsqlite3 is not installed everywhere (Egg included): probe
+# the compiler before committing to -static, so a bare `make`
+# degrades to a dynamic link with a loud warning instead of dying
+# inside ld. An explicit `make STATIC=1` still fails closed with
+# guidance rather than silently producing a dynamic binary.
+STATIC_SQLITE_OK := $(shell printf 'int main(void){return 0;}' | $(CC) -x c - -static -o /dev/null -lsqlite3 >/dev/null 2>&1 && echo yes || echo no)
+ifeq ($(STATIC_SQLITE_OK),yes)
     LDFLAGS ?= -static
+else ifeq ($(origin STATIC),command line)
+    $(error static libsqlite3 not found for $(CC): install it, run make STATIC=0, or make unix-builtin SQLITE_SRC=<sqlite3.c path>)
+else
+    $(warning static libsqlite3 not found for $(CC): linking dynamically; for a self-contained binary install static sqlite3 or run make unix-builtin SQLITE_SRC=<sqlite3.c path>)
+    LDFLAGS ?=
+endif
 else
     LDFLAGS ?=
 endif
