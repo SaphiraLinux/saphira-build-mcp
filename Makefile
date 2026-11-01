@@ -15,20 +15,23 @@ STATIC   ?= $(STATIC_DEFAULT)
 ifeq ($(STATIC),1)
 # Static libsqlite3 is not installed everywhere (Egg included): probe
 # the compiler before committing to -static, so a bare `make`
-# degrades to a dynamic link with a loud warning instead of dying
-# inside ld. An explicit `make STATIC=1` still fails closed with
-# guidance rather than silently producing a dynamic binary.
+# degrades to a dynamic link instead of dying inside ld. An explicit
+# `make STATIC=1` still fails closed with guidance rather than
+# silently producing a dynamic binary. The chosen mode is reported
+# on the link line (LINK_MODE), never as a warning.
 STATIC_SQLITE_OK := $(shell printf 'int main(void){return 0;}' | $(CC) -x c - -static -o /dev/null -lsqlite3 >/dev/null 2>&1 && echo yes || echo no)
 ifeq ($(STATIC_SQLITE_OK),yes)
     LDFLAGS ?= -static
+    LINK_MODE = static
 else ifeq ($(origin STATIC),command line)
     $(error static libsqlite3 not found for $(CC): install it, run make STATIC=0, or make unix-builtin SQLITE_SRC=<sqlite3.c path>)
 else
-    $(warning static libsqlite3 not found for $(CC): linking dynamically; for a self-contained binary install static sqlite3 or run make unix-builtin SQLITE_SRC=<sqlite3.c path>)
     LDFLAGS ?=
+    LINK_MODE = dynamic (no static libsqlite3)
 endif
 else
     LDFLAGS ?=
+    LINK_MODE = dynamic
 endif
 
 # Install location follows privilege unless overridden: root installs
@@ -90,6 +93,7 @@ unix-builtin: $(SRC)
 	strip $(BIN)-builtin
 
 $(BIN): $(OBJ)
+	@echo "link $@ [$(LINK_MODE)]"
 	$(CC) $(CFLAGS) $(OBJ) -o $@ $(LDFLAGS) $(LDLIBS)
 	strip $@
 
