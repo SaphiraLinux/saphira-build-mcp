@@ -19,6 +19,12 @@ body as the primary recovery record: objective, completed work,
 unfinished work, next action, blockers, anything unverified. Report
 those back, then stop and await instructions.
 
+Confirm tool contracts before relying on them: at session start,
+check `tools/list` for each tool and mode the task needs (a missing
+mode or parameter means a stale cached catalogue, not a missing
+capability). Never work around the gap — stop and re-initialize the
+MCP session (restart it) so it re-lists from the live server.
+
 Checkpoint first; `total_recall` only when deeper historical
 evidence is required. It retrieves what was recorded — never
 automatically, never unbounded.
