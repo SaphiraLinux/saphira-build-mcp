@@ -1,5 +1,14 @@
 CC       ?= gcc
-CFLAGS   ?= -std=gnu11 -Os -Wall -Wextra
+# Default optimization: -O3 everywhere, plus the x86-64-v3 baseline
+# on Intel/AMD (matches the Saphira recipe, which builds x86_64 with
+# -march=x86-64-v3). Other architectures keep portable defaults so
+# macOS/ARM builds keep working. Override with CFLAGS=... as usual.
+UNAME_M  := $(shell uname -m)
+ifeq ($(UNAME_M),x86_64)
+    CFLAGS   ?= -std=gnu11 -O3 -march=x86-64-v3 -Wall -Wextra
+else
+    CFLAGS   ?= -std=gnu11 -O3 -Wall -Wextra
+endif
 LDLIBS   ?= -lsqlite3
 
 # Static linking is the Linux/musl ideal; override with
