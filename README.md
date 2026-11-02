@@ -601,6 +601,16 @@ Bubblewrap sandbox, scratch under `SAPHIRA_TMPDIR`). Nothing in
 this repository builds on GitHub; there are no workflows, and
 none are wanted.
 
+FreeBSD (amd64, verified on 15.1 with base clang) builds
+zero-warning once `pkgconf` is installed (`pf install make pkgconf
+sqlite3`: pkgconf sqlite3 supplies the /usr/local include/lib
+paths, Done as no-ops on Linux and macOS); `SAPHIRA_TMPDIR` must point at a writable scratch (no `/build` convention), and the suite
+passes there too. `packaging/freebsd/make-package.sh` produces a
+native `pkg` via manifest+plist (runtime dep on
+`databases/sqlite3`), self-verified unprivileged, with a `.SHA256`
+beside the package; install it with `sudo pkg add
+<name>-<version>.pkg`.
+
 ## Licence
 
 Saphira-owned code under BUSL-1.1 (see LICENSE). Vendored JSON
