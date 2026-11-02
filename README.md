@@ -182,6 +182,98 @@ Whichever agent you use, finish with the round-trip proof from
 the OpenCode section: save a checkpoint, restart, confirm the
 fresh session lists the register before doing anything else.
 
+## Quick start: FreeBSD (amd64, verified on 15.1)
+
+FreeBSD is served three ways; the native package is the
+recommended one, because `pkg` owns the man page, the licence
+registration and the `databases/sqlite3` runtime dependency.
+Prerequisites for building or testing — base clang supplies the
+compiler itself:
+
+```sh
+pkg install gmake pkgconf sqlite3 python3
+```
+
+`gmake`, not base `make`: the makefile is written for GNU make and
+base `make` (bmake) cannot parse it. `pkgconf sqlite3` supplies the
+`/usr/local` include/lib paths that keep `sqlite3.h` findable on
+FreeBSD (it emits nothing on Linux or macOS, where system paths
+already suffice), and `python3` is only needed by the test suite.
+
+Option 1 — install the shipped package, no compilation:
+
+```sh
+fetch https://raw.githubusercontent.com/SaphiraLinux/saphira-build-mcp/feature/freebsd/bin/saphira-build-mcp-0.10.13.pkg
+sha256sum -c saphira-build-mcp-0.10.13.pkg.SHA256
+sudo pkg add ./saphira-build-mcp-0.10.13.pkg
+```
+
+`sha256sum -c` verifies the digest beside the package (the
+`.SHA256` line is digest-first, filenames relative, so run it in
+the download directory) and `pkg add` resolves the pinned
+`databases/sqlite3` dependency by itself. Binary, man page and
+licence land under `/usr/local`; check with
+`pkg info saphira-build-mcp`, `saphira-build-mcp --help`,
+`man saphira-build-mcp`.
+
+Option 2 — build and test from source:
+
+```sh
+git clone https://github.com/SaphiraLinux/saphira-build-mcp.git && cd saphira-build-mcp
+SAPHIRA_TMPDIR=/tmp gmake test           # hermetic suite (no /build here)
+sudo gmake install PREFIX=/usr/local     # without sudo: ~/.local/bin
+```
+
+The suite is green on 15.1 with `SAPHIRA_TMPDIR` pointed at a
+writable scratch (the default `/build` convention does not exist
+on FreeBSD). `PREFIX=/usr/local` matches FreeBSD conventions.
+
+Option 3 — rebuild the native package locally:
+
+```sh
+MAINTAINER=you@example.invalid sh packaging/freebsd/make-package.sh
+```
+
+stages via `DESTDIR`, writes
+`packaging/freebsd/dist/saphira-build-mcp-<version>.pkg` plus a
+`sha256sum`-format `.SHA256`, and verifies the package contents
+unprivileged along the way (manifest round-trip, byte-compare of
+the shipped binary, man page, licence, `--help` smoke).
+`MAINTAINER` defaults to `git config user.email` when unset.
+
+Wire the agent exactly as in the OpenCode section below — the
+same config shape applies on FreeBSD, pointing `command` wherever
+the binary landed (`/usr/local/bin/saphira-build-mcp` for a root
+package install, `~/.local/bin/...` otherwise). This global
+one-liner is what `opencode mcp add` produced on the 15.1 host
+itself, verified live through the bridge:
+
+```sh
+opencode mcp add saphira-build --global \
+  --env SBM_SAPHIRA=off \
+  --env SBM_AUTHOR="$USER" \
+  --env SBM_NOTES_DB="$HOME/.local/share/saphira-build-mcp/notes.db" \
+  -- "$HOME/.local/bin/saphira-build-mcp" --mcp
+```
+
+Finish with the checkpoint-rules step below and the round-trip
+proof: save a checkpoint, restart, confirm the fresh session
+lists the register before anything else.
+
+Known FreeBSD limits, stated plainly:
+
+- `install.sh` does not know about FreeBSD yet: here it would
+  checksum-verify and then install the glibc Linux binary, which
+  cannot run natively. On FreeBSD use the package (option 1) or a
+  source build (option 2), never `./install.sh`.
+- No static-libsqlite3 variant and no official ports-tree entry;
+  the package declares `devel/saphira-build-mcp` as its origin
+  but is produced from this repository, not the ports tree.
+- Verify digests with `sha256sum -c` (base on 15.1); on 13/14,
+  compare `sha256 -q` output against the `.SHA256` digest. Never
+  base `md5`-style `-c`: it exits 0 silently on mismatched,
+  missing and malformed digests (verified on 15.1).
+
 ## Important: install agent checkpoint rules
 
 Installing the MCP does **not** teach your agent when to save,
@@ -601,15 +693,18 @@ Bubblewrap sandbox, scratch under `SAPHIRA_TMPDIR`). Nothing in
 this repository builds on GitHub; there are no workflows, and
 none are wanted.
 
-FreeBSD (amd64, verified on 15.1 with base clang) builds
-zero-warning with `pkg install make pkgconf sqlite3`; `pkgconf
-sqlite3` supplies the /usr/local include/lib paths and emits
-nothing at all on Linux and macOS. `SAPHIRA_TMPDIR` must point at
-a writable scratch for the suite (no `/build` convention), and it
-passes there too. `packaging/freebsd/make-package.sh` produces a
-native `pkg` via manifest+plist (runtime dep on
-`databases/sqlite3`), self-verified unprivileged, with a `.SHA256`
-beside the package; install it with `sudo pkg add
+FreeBSD (amd64, verified on 15.1 with base clang) needs
+`pkg install gmake pkgconf sqlite3` — GNU make, not base `make`
+(bmake cannot parse this makefile); `pkgconf sqlite3` supplies the
+/usr/local include/lib paths and emits nothing at all on Linux and
+macOS. `SAPHIRA_TMPDIR` must point at a writable scratch for the
+suite (no `/build` convention), and it passes there too — full
+setup in *Quick start: FreeBSD*. `packaging/freebsd/make-package.sh`
+produces a native `pkg` via manifest+plist (runtime dep on
+`databases/sqlite3`), self-verified unprivileged, with a
+`sha256sum`-format `.SHA256` beside the package; verify the
+sidecar with `sha256sum -c` (never base `sha256 -c`, which
+accepts mismatches silently) and install it with `sudo pkg add
 <name>-<version>.pkg`.
 
 ## Licence
