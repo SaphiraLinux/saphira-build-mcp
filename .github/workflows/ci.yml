@@ -45,7 +45,7 @@ jobs:
           def=$(counts env); nobuild=$(counts env SBM_BUILD=off)
           port=$(counts env SBM_SAPHIRA=off); lock=$(counts env SBM_SAPHIRA=off SBM_BUILD=off)
           echo "matrix: $def/$nobuild/$port/$lock"
-          [ "$def" = 24 ] && [ "$nobuild" = 22 ] && [ "$port" = 13 ] && [ "$lock" = 11 ]
+          [ "$def" = 26 ] && [ "$nobuild" = 24 ] && [ "$port" = 15 ] && [ "$lock" = 13 ]
       - uses: actions/upload-artifact@v4
         with:
           name: saphira-build-mcp-musl
@@ -87,7 +87,7 @@ jobs:
           def=$(counts env); nobuild=$(counts env SBM_BUILD=off)
           port=$(counts env SBM_SAPHIRA=off); lock=$(counts env SBM_SAPHIRA=off SBM_BUILD=off)
           echo "matrix: $def/$nobuild/$port/$lock"
-          [ "$def" = 24 ] && [ "$nobuild" = 22 ] && [ "$port" = 13 ] && [ "$lock" = 11 ]
+          [ "$def" = 26 ] && [ "$nobuild" = 24 ] && [ "$port" = 15 ] && [ "$lock" = 13 ]
       - uses: actions/upload-artifact@v4
         with:
           name: saphira-build-mcp-arch
@@ -130,7 +130,7 @@ jobs:
           def=$(counts env); nobuild=$(counts env SBM_BUILD=off)
           port=$(counts env SBM_SAPHIRA=off); lock=$(counts env SBM_SAPHIRA=off SBM_BUILD=off)
           echo "matrix: $def/$nobuild/$port/$lock"
-          [ "$def" = 24 ] && [ "$nobuild" = 22 ] && [ "$port" = 13 ] && [ "$lock" = 11 ]
+          [ "$def" = 26 ] && [ "$nobuild" = 24 ] && [ "$port" = 15 ] && [ "$lock" = 13 ]
       - uses: actions/upload-artifact@v4
         with:
           name: saphira-build-mcp-osx
@@ -176,7 +176,7 @@ jobs:
             def=$(counts "$1"); nobuild=$(counts "$1" SBM_BUILD=off)
             port=$(counts "$1" SBM_SAPHIRA=off); lock=$(counts "$1" SBM_SAPHIRA=off SBM_BUILD=off)
             echo "$1 matrix: $def/$nobuild/$port/$lock"
-            [ "$def" = 24 ] && [ "$nobuild" = 22 ] && [ "$port" = 13 ] && [ "$lock" = 11 ]
+            [ "$def" = 26 ] && [ "$nobuild" = 24 ] && [ "$port" = 15 ] && [ "$lock" = 13 ]
           }
           matrix ./saphira-build-mcp.windows-builtin.exe
           cp /mingw64/bin/libsqlite3*.dll ./
