@@ -124,6 +124,26 @@ cmp -s "$BIN" "$XDIR$PREFIX/bin/saphira-build-mcp" || {
 	exit 1
 }
 
-sha256 "$PKGFILE" | awk '{print $2 "  " $1}' > "$PKGFILE.SHA256"
+# Sidecar digest in the coreutils/sha256sum format ("digest  filename"),
+# filename relative to the sidecar so `sha256sum -c` verifies in place.
+# The previous line assumed coreutils output ("digest file") and swapped
+# fields, but it called the base `sha256`, which prints
+# "SHA256 (file) = digest" - the swap emitted "(file)  SHA256" with no
+# digest at all. Also note base `sha256 -c` fails to catch mismatched
+# digests (verified 15.1: mismatched, missing and malformed lines all
+# exit 0 silently) - never verify with it; use `sha256sum -c`, or on
+# bases without sha256sum (13/14) compare `sha256 -q` against the
+# sidecar's first field.
+PKG_BASE=$(basename "$PKGFILE")
+if command -v sha256sum >/dev/null 2>&1; then
+	(cd "$OUT" && sha256sum "$PKG_BASE") > "$PKGFILE.SHA256"
+else
+	printf '%s  %s\n' "$(sha256 -q "$PKGFILE")" "$PKG_BASE" > "$PKGFILE.SHA256"
+fi
+
+# Prove the sidecar verifies before shipping it.
+(cd "$OUT" && sha256sum -c "$PKG_BASE.SHA256" >/dev/null) ||
+	{ printf 'make-package: sidecar does not verify\n' >&2; exit 1; }
+
 printf 'make-package: OK\n';
 ls -l "$PKGFILE" "$PKGFILE.SHA256"
