@@ -11,6 +11,16 @@ else
 endif
 LDLIBS   ?= -lsqlite3
 
+# sqlite3.h and libsqlite3 are not always on the compiler's default
+# search path: FreeBSD keeps ports under /usr/local, so a bare `make`
+# there fails with "sqlite3.h file not found" unless the paths are
+# passed explicitly. pkgconf emits exactly the needed -I/-L flags and
+# nothing extra when system paths already suffice (Linux, macOS).
+# Evaluated once with := (same as UNAME_M/UNAME_S); command-line
+# overrides (make SQLITE_CFLAGS=... ) still win as usual.
+SQLITE_CFLAGS := $(shell pkgconf --cflags sqlite3 2>/dev/null)
+SQLITE_LIBS   := $(shell pkgconf --libs sqlite3 2>/dev/null)
+
 # Static linking is the Linux/musl ideal; override with
 #   make STATIC=1     (force static anywhere)
 # The Saphira package builds with STATIC=0 (dynamic musl libc).
@@ -28,7 +38,7 @@ ifeq ($(STATIC),1)
 # `make STATIC=1` still fails closed with guidance rather than
 # silently producing a dynamic binary. The chosen mode is reported
 # on the link line (LINK_MODE), never as a warning.
-STATIC_SQLITE_OK := $(shell printf 'int main(void){return 0;}' | $(CC) -x c - -static -o /dev/null -lsqlite3 >/dev/null 2>&1 && echo yes || echo no)
+STATIC_SQLITE_OK := $(shell printf 'int main(void){return 0;}' | $(CC) $(SQLITE_CFLAGS) -x c - -static -o /dev/null -lsqlite3 $(SQLITE_LIBS) >/dev/null 2>&1 && echo yes || echo no)
 # Self-contained binaries carry their own SQLite: they need only a
 # working plain -static link, not a static system libsqlite3.
 STATIC_ALONE_OK := $(shell printf 'int main(void){return 0;}' | $(CC) -x c - -static -o /dev/null >/dev/null 2>&1 && echo yes || echo no)
@@ -124,11 +134,11 @@ unix-builtin: $(SRC)
 
 $(BIN): $(OBJ)
 	@echo "link $@ [$(LINK_MODE)]"
-	$(CC) $(CFLAGS) $(OBJ) -o $@ $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CFLAGS) $(SQLITE_CFLAGS) $(OBJ) -o $@ $(LDFLAGS) $(LDLIBS) $(SQLITE_LIBS)
 	strip $@
 
 src/%.o: src/%.c $(wildcard src/*.h)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(SQLITE_CFLAGS) -c $< -o $@
 
 test: all
 	sh tests/test.sh

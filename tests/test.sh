@@ -255,6 +255,10 @@ t "unknown flag usage exit 2" "0" "$("$BIN" --frobnicate >/dev/null 2>&1 || echo
 H1Q=$($SHA256SUM "$FIX/queue.db" | cut -d' ' -f1)
 H1R=$($SHA256SUM "$FIX/repo/repository.db" | cut -d' ' -f1)
 
+# POSIX leaves `VAR=val func` unspecified when func is a shell
+# function (FreeBSD ash drops the assignments entirely, so gates like
+# SBM_BUILD vanish before the child). Call sites must export inside
+# the command substitution instead: out=$(export VAR=val; mcp '...').
 mcp() { printf '%s\n' "$@" | "$BIN" --mcp 2>/dev/null; }
 
 # Branding lives only in --help: protocol output must not carry it.
@@ -571,17 +575,17 @@ t_contains "initialize names row" "$out" "kernel-cal"
 t_contains "initialize never auto-resume" "$out" "Never auto-resume"
 # legacy journal: pre-0.7.0 rows read back as active (migration proof)
 sqlite3 "$FIX/legacy-notes.db" "CREATE TABLE checkpoints(id INTEGER PRIMARY KEY,label TEXT NOT NULL,package TEXT NOT NULL DEFAULT '',title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL,author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',src_commit TEXT,recipe_commit TEXT,created_at TEXT NOT NULL); INSERT INTO checkpoints(label,body,author,created_at) VALUES('legacy-line','old work','ada','2026-10-20T00:00:00Z');"
-out=$(SBM_NOTES_DB="$FIX/legacy-notes.db" mcp '{"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{}}}')
+out=$(export SBM_NOTES_DB="$FIX/legacy-notes.db"; mcp '{"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{}}}')
 t_contains "checkpoint legacy migrates to active" "$out" "1 total (showing 1)"
 t_contains "checkpoint legacy row" "$out" "legacy-line"
-out=$(SBM_NOTES_DB="$FIX/legacy-notes.db" mcp '{"jsonrpc":"2.0","id":105,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
+out=$(export SBM_NOTES_DB="$FIX/legacy-notes.db"; mcp '{"jsonrpc":"2.0","id":105,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
 t_contains "checkpoint legacy instructions" "$out" "Active checkpoints (1 total)"
 # fresh journal: empty register reads as zero, honestly stated
 sqlite3 "$FIX/fresh-notes.db" "CREATE TABLE checkpoints(id INTEGER PRIMARY KEY,label TEXT NOT NULL,package TEXT NOT NULL DEFAULT '',title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL,author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',src_commit TEXT,recipe_commit TEXT,created_at TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',project TEXT NOT NULL DEFAULT '',workstream TEXT NOT NULL DEFAULT '',closed_at TEXT,closed_by TEXT);"
-out=$(SBM_NOTES_DB="$FIX/fresh-notes.db" mcp '{"jsonrpc":"2.0","id":106,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
+out=$(export SBM_NOTES_DB="$FIX/fresh-notes.db"; mcp '{"jsonrpc":"2.0","id":106,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
 t_contains "initialize fresh zero" "$out" "No active checkpoints recorded."
 # missing journal: static guidance only, never an invented count
-out=$(SBM_NOTES_DB="$FIX/missing-notes.db" mcp '{"jsonrpc":"2.0","id":107,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
+out=$(export SBM_NOTES_DB="$FIX/missing-notes.db"; mcp '{"jsonrpc":"2.0","id":107,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
 t_contains "initialize missing journal static" "$out" '"instructions":"Session checkpoints are a persistent register'
 t_not_contains "initialize missing journal no count" "$out" "Active checkpoints ("
 
@@ -675,13 +679,13 @@ out=$(mcp '{"jsonrpc":"2.0","id":423,"method":"tools/call","params":{"name":"tot
 t_contains "recall cross session" "$out" "agent Codex"
 # pre-provenance journal: NULL fields stay NULL, history searchable
 sqlite3 "$FIX/oldprov-notes.db" "CREATE TABLE checkpoints(id INTEGER PRIMARY KEY,label TEXT NOT NULL,package TEXT NOT NULL DEFAULT '',title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL,author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',src_commit TEXT,recipe_commit TEXT,created_at TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',project TEXT NOT NULL DEFAULT '',workstream TEXT NOT NULL DEFAULT '',closed_at TEXT,closed_by TEXT); CREATE TABLE notes(id INTEGER PRIMARY KEY,package TEXT NOT NULL,kind TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL,author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',recipe_commit TEXT,created_at TEXT NOT NULL); INSERT INTO checkpoints(label,body,author,created_at) VALUES('old-cp','olduniqueword body here','ada','2026-10-20T00:00:00Z'); INSERT INTO notes(package,kind,body,author,created_at) VALUES('oldpkg','finding','olduniqueword note here','ada','2026-10-20T00:00:00Z');"
-out=$(SBM_NOTES_DB="$FIX/oldprov-notes.db" mcp '{"jsonrpc":"2.0","id":424,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline"}}}')
+out=$(export SBM_NOTES_DB="$FIX/oldprov-notes.db"; mcp '{"jsonrpc":"2.0","id":424,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"timeline"}}}')
 t_contains "recall old rows present" "$out" "old-cp"
 t_contains "recall old env unknown" "$out" "unknown origin"
 t_contains "recall old cursor end" "$out" "cursor: end"
-out=$(SBM_NOTES_DB="$FIX/oldprov-notes.db" mcp '{"jsonrpc":"2.0","id":425,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"query","query":"olduniqueword"}}}')
+out=$(export SBM_NOTES_DB="$FIX/oldprov-notes.db"; mcp '{"jsonrpc":"2.0","id":425,"method":"tools/call","params":{"name":"total_recall","arguments":{"mode":"query","query":"olduniqueword"}}}')
 t_contains "recall old backfilled" "$out" "2 rows"
-out=$(SBM_NOTES_DB="$FIX/oldprov-notes.db" mcp '{"jsonrpc":"2.0","id":426,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":1}}}')
+out=$(export SBM_NOTES_DB="$FIX/oldprov-notes.db"; mcp '{"jsonrpc":"2.0","id":426,"method":"tools/call","params":{"name":"checkpoint_resume","arguments":{"id":1}}}')
 t_contains "recall old resume works" "$out" "olduniqueword body here"
 t_not_contains "recall old resume no where" "$out" "where:"
 # total_recall never nudges startup: initialize stays checkpoint-only
@@ -695,7 +699,7 @@ export SBM_NOTES_DB="$FIX/notes.db"
 
 # --- tools.conf extensions --------------------------------------------
 # absent conf: built-ins only, no externals, never an error.
-out=$(SBM_TOOLS_CONF="$FIX/no-such.conf" mcp '{"jsonrpc":"2.0","id":200,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/no-such.conf"; mcp '{"jsonrpc":"2.0","id":200,"method":"tools/list"}')
 t_contains "ext absent conf builtins" "$out" '"name":"checkpoint_close"'
 t_not_contains "ext absent conf no externals" "$out" 'External ('
 # fixture externals: fixed argv only, sandbox off (hermetic).
@@ -730,25 +734,25 @@ tool ext_slow $FIX/bin/ext-slow.sh read 1 65536 off $FIX --
 tool ext_loud $FIX/bin/ext-loud.sh read 10 64 off $FIX --
 tool ext_boxed $FIX/bin/ext-ok.sh read 10 65536 on $FIX --
 EOF
-out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":201,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-good.conf"; mcp '{"jsonrpc":"2.0","id":201,"method":"tools/list"}')
 t_contains "ext list has ext_ok" "$out" '"name":"ext_ok"'
 # Regression: extra post-"--" argv must not overrun the argv vector
 # (heap corruption that crashed glibc builds at list time).
 t_contains "ext list has ext_args" "$out" '"name":"ext_args"'
 t_contains "ext list describes class" "$out" 'External (read):'
-out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":202,"method":"tools/call","params":{"name":"ext_ok","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-good.conf"; mcp '{"jsonrpc":"2.0","id":202,"method":"tools/call","params":{"name":"ext_ok","arguments":{}}}')
 t_contains "ext call output" "$out" 'ext-ok args:'
 t_contains "ext call exit 0" "$out" '[exit=0'
 t_contains "ext call no error" "$out" '"isError":false'
-out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":206,"method":"tools/call","params":{"name":"ext_args","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-good.conf"; mcp '{"jsonrpc":"2.0","id":206,"method":"tools/call","params":{"name":"ext_args","arguments":{}}}')
 t_contains "ext args pass through" "$out" '--no-pager status --short'
-out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":203,"method":"tools/call","params":{"name":"ext_fail","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-good.conf"; mcp '{"jsonrpc":"2.0","id":203,"method":"tools/call","params":{"name":"ext_fail","arguments":{}}}')
 t_contains "ext fail isError" "$out" '"isError":true'
 t_contains "ext fail exit 3" "$out" '[exit=3'
-out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":204,"method":"tools/call","params":{"name":"ext_slow","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-good.conf"; mcp '{"jsonrpc":"2.0","id":204,"method":"tools/call","params":{"name":"ext_slow","arguments":{}}}')
 t_contains "ext slow timeout" "$out" '[timeout]'
 t_contains "ext slow isError" "$out" '"isError":true'
-out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":205,"method":"tools/call","params":{"name":"ext_loud","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-good.conf"; mcp '{"jsonrpc":"2.0","id":205,"method":"tools/call","params":{"name":"ext_loud","arguments":{}}}')
 t_contains "ext loud truncated" "$out" '[truncated]'
 t_contains "ext loud no error" "$out" '"isError":false'
 t "ext audit ok row" "$(sqlite3 "$FIX/notes.db" "SELECT COUNT(*) FROM tool_runs WHERE tool='ext_ok' AND exit_status=0;")" "1" "1"
@@ -777,33 +781,33 @@ EOF
 chmod +x "$FIX/bin/ssh"
 # default lockdown: ssh refused, unrelated tools keep working.
 printf 'tool ext_ssh %s read 10 100 off %s --\ntool ext_q2 %s read 10 100 off %s --\n' "$FIX/bin/ssh" "$FIX" "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-lock.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-lock.conf" mcp '{"jsonrpc":"2.0","id":230,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-lock.conf"; mcp '{"jsonrpc":"2.0","id":230,"method":"tools/list"}')
 t_not_contains "lockdown drops ssh tool" "$out" '"name":"ext_ssh"'
 t_contains "lockdown keeps sibling tool" "$out" '"name":"ext_q2"'
 t_contains "lockdown keeps builtins" "$out" '"name":"package_search"'
-out=$(SBM_TOOLS_CONF="$FIX/ext-lock.conf" mcp '{"jsonrpc":"2.0","id":231,"method":"tools/call","params":{"name":"ext_q2","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-lock.conf"; mcp '{"jsonrpc":"2.0","id":231,"method":"tools/call","params":{"name":"ext_q2","arguments":{}}}')
 t_contains "lockdown sibling runs" "$out" 'ext-ok args:'
 # operator opt-out: lockdown_ssh false permits the ssh executable.
 printf 'lockdown_ssh false\ntool ext_ssh %s read 10 100 off %s --\n' "$FIX/bin/ssh" "$FIX" > "$FIX/ext-nolock.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-nolock.conf" mcp '{"jsonrpc":"2.0","id":232,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-nolock.conf"; mcp '{"jsonrpc":"2.0","id":232,"method":"tools/list"}')
 t_contains "nolock lists ssh tool" "$out" '"name":"ext_ssh"'
-out=$(SBM_TOOLS_CONF="$FIX/ext-nolock.conf" mcp '{"jsonrpc":"2.0","id":233,"method":"tools/call","params":{"name":"ext_ssh","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-nolock.conf"; mcp '{"jsonrpc":"2.0","id":233,"method":"tools/call","params":{"name":"ext_ssh","arguments":{}}}')
 t_contains "nolock ssh runs fixed argv" "$out" 'fake-ssh ran (fixture)'
 # the lockdown line applies wherever it sits (pre-scan, not order).
 printf 'tool ext_ssh %s read 10 100 off %s --\nlockdown_ssh false\n' "$FIX/bin/ssh" "$FIX" > "$FIX/ext-nolock-after.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-nolock-after.conf" mcp '{"jsonrpc":"2.0","id":234,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-nolock-after.conf"; mcp '{"jsonrpc":"2.0","id":234,"method":"tools/list"}')
 t_contains "nolock after tool line works" "$out" '"name":"ext_ssh"'
 # the compact `lockdown_ssh=false` spelling works too.
 printf 'lockdown_ssh=false\ntool ext_ssh %s read 10 100 off %s --\n' "$FIX/bin/ssh" "$FIX" > "$FIX/ext-nolock-eq.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-nolock-eq.conf" mcp '{"jsonrpc":"2.0","id":243,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-nolock-eq.conf"; mcp '{"jsonrpc":"2.0","id":243,"method":"tools/list"}')
 t_contains "nolock equals form works" "$out" '"name":"ext_ssh"'
 # invalid lockdown value: fail closed toward refuse.
 printf 'lockdown_ssh maybe\ntool ext_ssh %s read 10 100 off %s --\n' "$FIX/bin/ssh" "$FIX" > "$FIX/ext-lockbad.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-lockbad.conf" mcp '{"jsonrpc":"2.0","id":235,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-lockbad.conf"; mcp '{"jsonrpc":"2.0","id":235,"method":"tools/list"}')
 t_not_contains "bad lockdown stays locked" "$out" '"name":"ext_ssh"'
 # ask delivery: prompt on a dedicated stdin pipe, EOF after writing.
 printf 'tool ext_ask %s ask 10 65536 off %s --\n' "$FIX/bin/ext-ask.sh" "$FIX" > "$FIX/ext-ask.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-ask.conf" mcp '{"jsonrpc":"2.0","id":236,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-ask.conf"; mcp '{"jsonrpc":"2.0","id":236,"method":"tools/list"}')
 t_contains "ask lists with prompt schema" "$out" '"required":["prompt"]'
 t_contains "ask describes stdin" "$out" 'External (ask):'
 # the list document must stay machine-readable (a missing brace
@@ -811,72 +815,72 @@ t_contains "ask describes stdin" "$out" 'External (ask):'
 # 26 built-ins plus the one ask external in this conf.
 SBM_TOOLS_CONF="$FIX/ext-ask.conf" "$BIN" --list-tools > "$ROOT/tools-list-ask.json"
 t_contains "list-tools ask parses" "$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['tools']))" "$ROOT/tools-list-ask.json" 2>/dev/null || echo PARSE-FAIL)" "27"
-out=$(SBM_TOOLS_CONF="$FIX/ext-ask.conf" mcp '{"jsonrpc":"2.0","id":237,"method":"tools/call","params":{"name":"ext_ask","arguments":{"prompt":"hello-qwen"}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-ask.conf"; mcp '{"jsonrpc":"2.0","id":237,"method":"tools/call","params":{"name":"ext_ask","arguments":{"prompt":"hello-qwen"}}}')
 t_contains "ask delivers prompt" "$out" 'asked:hello-qwen'
 t_contains "ask exit 0" "$out" '[exit=0'
 t_contains "ask no error" "$out" '"isError":false'
 t "ask audit stdin marker" "$(sqlite3 "$FIX/notes.db" "SELECT COUNT(*) FROM tool_runs WHERE tool='ext_ask' AND argv LIKE '%<stdin:10 bytes>%';")" "1" "1"
-out=$(SBM_TOOLS_CONF="$FIX/ext-ask.conf" mcp '{"jsonrpc":"2.0","id":238,"method":"tools/call","params":{"name":"ext_ask","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-ask.conf"; mcp '{"jsonrpc":"2.0","id":238,"method":"tools/call","params":{"name":"ext_ask","arguments":{}}}')
 t_contains "ask missing prompt isError" "$out" '"isError":true'
 t_contains "ask missing prompt message" "$out" 'prompt required'
-out=$(SBM_TOOLS_CONF="$FIX/ext-ask.conf" mcp '{"jsonrpc":"2.0","id":239,"method":"tools/call","params":{"name":"ext_ask","arguments":{"prompt":5}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-ask.conf"; mcp '{"jsonrpc":"2.0","id":239,"method":"tools/call","params":{"name":"ext_ask","arguments":{"prompt":5}}}')
 t_contains "ask wrong-type prompt rejected" "$out" '"code":-32602'
 # read tools get /dev/null stdin: nothing can consume the session.
 printf 'tool ext_stdin %s read 10 65536 off %s --\n' "$FIX/bin/ext-stdin.sh" "$FIX" > "$FIX/ext-stdin.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-stdin.conf" mcp '{"jsonrpc":"2.0","id":240,"method":"tools/call","params":{"name":"ext_stdin","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-stdin.conf"; mcp '{"jsonrpc":"2.0","id":240,"method":"tools/call","params":{"name":"ext_stdin","arguments":{}}}')
 t_contains "ext stdin is eof" "$out" 'stdin-eof'
 # one bad line no longer disables unrelated working tools.
 printf 'tool badmeta %s read 10 100 off %s -- %s\ntool ext_q3 %s read 10 100 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" 'a;b' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-isolate.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-isolate.conf" mcp '{"jsonrpc":"2.0","id":241,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-isolate.conf"; mcp '{"jsonrpc":"2.0","id":241,"method":"tools/list"}')
 t_not_contains "isolate drops bad line" "$out" '"name":"badmeta"'
 t_contains "isolate keeps sibling" "$out" '"name":"ext_q3"'
 t_contains "isolate keeps builtins" "$out" '"name":"package_search"'
 printf 'expose nosuchtool off\ntool ext_q4 %s read 10 100 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-isolate-expose.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-isolate-expose.conf" mcp '{"jsonrpc":"2.0","id":242,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-isolate-expose.conf"; mcp '{"jsonrpc":"2.0","id":242,"method":"tools/list"}')
 t_contains "isolate expose keeps builtin" "$out" '"name":"package_search"'
 t_contains "isolate expose keeps sibling" "$out" '"name":"ext_q4"'
 printf 'expose package_search off\ntool ext_q %s read 10 100 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-off.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-off.conf" mcp '{"jsonrpc":"2.0","id":210,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-off.conf"; mcp '{"jsonrpc":"2.0","id":210,"method":"tools/list"}')
 t_not_contains "ext off omitted" "$out" '"name":"package_search"'
 t_contains "ext off keeps ext" "$out" '"name":"ext_q"'
-out=$(SBM_TOOLS_CONF="$FIX/ext-off.conf" mcp '{"jsonrpc":"2.0","id":211,"method":"tools/call","params":{"name":"package_search","arguments":{"query":"pkg"}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-off.conf"; mcp '{"jsonrpc":"2.0","id":211,"method":"tools/call","params":{"name":"package_search","arguments":{"query":"pkg"}}}')
 t_contains "ext off call unknown" "$out" '"code":-32602'
 printf 'expose checkpoint_list off\ntool ext_q %s read 10 100 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-badckpt.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-badckpt.conf" mcp '{"jsonrpc":"2.0","id":212,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-badckpt.conf"; mcp '{"jsonrpc":"2.0","id":212,"method":"tools/list"}')
 t_contains "ext checkpoint forced on" "$out" '"name":"checkpoint_list"'
 # per-line isolation: the refused expose drops, the sibling loads.
 t_contains "ext bad expose keeps sibling" "$out" '"name":"ext_q"'
 printf 'expose nosuchtool off\n' > "$FIX/ext-badexpose.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-badexpose.conf" mcp '{"jsonrpc":"2.0","id":213,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-badexpose.conf"; mcp '{"jsonrpc":"2.0","id":213,"method":"tools/list"}')
 t_contains "ext unknown expose ignored" "$out" '"name":"package_search"'
 printf 'tool package_info %s read 10 100 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-shadow.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-shadow.conf" mcp '{"jsonrpc":"2.0","id":214,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-shadow.conf"; mcp '{"jsonrpc":"2.0","id":214,"method":"tools/list"}')
 t_contains "ext shadow keeps builtin" "$out" '"name":"package_info"'
 t_not_contains "ext shadow no ext" "$out" 'External ('
 printf 'tool badsh /bin/sh read 10 100 off %s -- -c\n' "$FIX" > "$FIX/ext-denied.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-denied.conf" mcp '{"jsonrpc":"2.0","id":215,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-denied.conf"; mcp '{"jsonrpc":"2.0","id":215,"method":"tools/list"}')
 t_contains "ext denied exe builtins" "$out" '"name":"package_search"'
 t_not_contains "ext denied exe no ext" "$out" 'External ('
 printf 'tool badmeta %s read 10 100 off %s -- %s\n' "$FIX/bin/ext-ok.sh" "$FIX" 'a;b' > "$FIX/ext-meta.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-meta.conf" mcp '{"jsonrpc":"2.0","id":216,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-meta.conf"; mcp '{"jsonrpc":"2.0","id":216,"method":"tools/list"}')
 t_not_contains "ext metachar no ext" "$out" 'External ('
 printf 'tool badstate %s read 10 100 off %s -- queue.db\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-state.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-state.conf" mcp '{"jsonrpc":"2.0","id":217,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-state.conf"; mcp '{"jsonrpc":"2.0","id":217,"method":"tools/list"}')
 t_not_contains "ext state token no ext" "$out" 'External ('
 printf 'tool gone /nonexistent/gone read 10 100 off %s --\n' "$FIX" > "$FIX/ext-gone.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-gone.conf" mcp '{"jsonrpc":"2.0","id":218,"method":"tools/call","params":{"name":"gone","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-gone.conf"; mcp '{"jsonrpc":"2.0","id":218,"method":"tools/call","params":{"name":"gone","arguments":{}}}')
 t_contains "ext missing exe isError" "$out" '"isError":true'
 t_contains "ext missing exe message" "$out" 'unavailable'
 # A real sandbox run needs bwrap (absent on macOS and minimal
 # hosts): skip the success asserts there, keep the fail-closed one.
 if command -v "${SBM_BWRAP:-bwrap}" >/dev/null 2>&1; then
-out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" mcp '{"jsonrpc":"2.0","id":219,"method":"tools/call","params":{"name":"ext_boxed","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-good.conf"; mcp '{"jsonrpc":"2.0","id":219,"method":"tools/call","params":{"name":"ext_boxed","arguments":{}}}')
 t_contains "ext sandbox runs" "$out" 'ext-ok args:'
 t_contains "ext sandbox exit 0" "$out" '[exit=0'
 else
 	printf 'SKIP  ext sandbox runs (no bwrap on PATH)\n'
 fi
-out=$(SBM_TOOLS_CONF="$FIX/ext-good.conf" SBM_BWRAP="/nonexistent-bwrap" mcp '{"jsonrpc":"2.0","id":220,"method":"tools/call","params":{"name":"ext_boxed","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-good.conf" SBM_BWRAP="/nonexistent-bwrap"; mcp '{"jsonrpc":"2.0","id":220,"method":"tools/call","params":{"name":"ext_boxed","arguments":{}}}')
 t_contains "ext sandbox missing fails closed" "$out" '"isError":true'
 # sandbox profile: the recipe-tree bind is conditional on existence
 # so sandboxed externals run off-builder too. Fake bwrap records the
@@ -887,7 +891,7 @@ echo "FAKEBWRAP-ARGS: \$*"
 EOF
 chmod +x "$FIX/bin/fake-bwrap.sh"
 printf 'tool ext_probe %s read 10 65536 on %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-probe.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-probe.conf" SBM_BWRAP="$FIX/bin/fake-bwrap.sh" mcp '{"jsonrpc":"2.0","id":221,"method":"tools/call","params":{"name":"ext_probe","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-probe.conf" SBM_BWRAP="$FIX/bin/fake-bwrap.sh"; mcp '{"jsonrpc":"2.0","id":221,"method":"tools/call","params":{"name":"ext_probe","arguments":{}}}')
 t_contains "sandbox profile keeps unshare" "$out" "--unshare-net"
 t_contains "sandbox profile binds usr" "$out" "--ro-bind /usr /usr"
 if [ -d /recipes ]; then
@@ -941,9 +945,9 @@ t "portable void untouched" "$(test -e "$PVOID/recipes" -o -e "$PVOID/queue.db" 
 t "portable journal created" "$(test -f "$PJOURNAL" && echo yes || echo no)" "yes" "yes"
 # externals survive portable mode unchanged.
 printf 'tool ext_ok %s read 10 65536 off %s --\n' "$FIX/bin/ext-ok.sh" "$FIX" > "$FIX/ext-portable.conf"
-out=$(SBM_TOOLS_CONF="$FIX/ext-portable.conf" mcp '{"jsonrpc":"2.0","id":308,"method":"tools/list"}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-portable.conf"; mcp '{"jsonrpc":"2.0","id":308,"method":"tools/list"}')
 t_contains "portable ext listed" "$out" '"name":"ext_ok"'
-out=$(SBM_TOOLS_CONF="$FIX/ext-portable.conf" mcp '{"jsonrpc":"2.0","id":309,"method":"tools/call","params":{"name":"ext_ok","arguments":{}}}')
+out=$(export SBM_TOOLS_CONF="$FIX/ext-portable.conf"; mcp '{"jsonrpc":"2.0","id":309,"method":"tools/call","params":{"name":"ext_ok","arguments":{}}}')
 t_contains "portable ext runs" "$out" 'ext-ok args:'
 # invalid mode is an explicit configuration failure, never silent on.
 out=$(SBM_SAPHIRA=bogus "$BIN" --list-tools 2>&1 || echo "rc=$?")
@@ -975,11 +979,11 @@ done
 for n in build_request package_bump; do
 	t_not_contains "build-off drops $n" "$out" "\"name\":\"$n\""
 done
-out=$(SBM_BUILD=off mcp '{"jsonrpc":"2.0","id":320,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a","reason":"x","author":"t"}}}')
+out=$(export SBM_BUILD=off; mcp '{"jsonrpc":"2.0","id":320,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a","reason":"x","author":"t"}}}')
 t_contains "build-off request unknown" "$out" '"code":-32602'
-out=$(SBM_BUILD=off mcp '{"jsonrpc":"2.0","id":321,"method":"tools/call","params":{"name":"package_bump","arguments":{"package":"pkg-a","reason":"x"}}}')
+out=$(export SBM_BUILD=off; mcp '{"jsonrpc":"2.0","id":321,"method":"tools/call","params":{"name":"package_bump","arguments":{"package":"pkg-a","reason":"x"}}}')
 t_contains "build-off bump unknown" "$out" '"code":-32602'
-out=$(SBM_BUILD=off mcp '{"jsonrpc":"2.0","id":322,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{}}}')
+out=$(export SBM_BUILD=off; mcp '{"jsonrpc":"2.0","id":322,"method":"tools/call","params":{"name":"checkpoint_list","arguments":{}}}')
 t_not_contains "build-off journal works" "$out" '"code":-32602'
 # combined: no builder state and no build permission leaves the
 # journal set (4 checkpoints + 2 notes + total_recall + 3 policy +
@@ -1087,7 +1091,7 @@ t_contains "foresight unrated shown" "$out" '[unrated]'
 # legacy database without the newer columns migrates on open.
 LEGACY=$ROOT/legacy-req.db
 sqlite3 "$LEGACY" "CREATE TABLE requirements(id INTEGER PRIMARY KEY,package TEXT NOT NULL DEFAULT '',polarity TEXT NOT NULL,requirement TEXT NOT NULL,evidence TEXT NOT NULL DEFAULT '',author TEXT NOT NULL,recorder TEXT NOT NULL DEFAULT '',recipe_commit TEXT,created_at TEXT NOT NULL,session_id TEXT,hostname TEXT,username TEXT,cwd TEXT,agent TEXT,ctx_origin TEXT); INSERT INTO requirements(package,polarity,requirement,author,recorder,created_at) VALUES('pkg-leg','do-not','old row','t','test','2026-01-01T00:00:00Z');"
-out=$(SBM_NOTES_DB="$LEGACY" mcp '{"jsonrpc":"2.0","id":422,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-leg"}}}')
+out=$(export SBM_NOTES_DB="$LEGACY"; mcp '{"jsonrpc":"2.0","id":422,"method":"tools/call","params":{"name":"foresight","arguments":{"mode":"check","package":"pkg-leg"}}}')
 t_contains "legacy requirements migrate" "$out" '[unrated]'
 t_contains "legacy row readable" "$out" 'old row'
 # reader: applicable foresights surface on queue and status.
@@ -1097,7 +1101,7 @@ t_contains "build request shows blocker text" "$out" "do-not [blocker]"
 out=$(mcp '{"jsonrpc":"2.0","id":431,"method":"tools/call","params":{"name":"package_build_status","arguments":{"name":"pkg-a"}}}')
 t_contains "build status shows foresight" "$out" "foresight (blockers first"
 EMPTYJ=$ROOT/empty-req.db
-out=$(SBM_NOTES_DB="$EMPTYJ" mcp '{"jsonrpc":"2.0","id":432,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a","reason":"silent reader probe"}}}')
+out=$(export SBM_NOTES_DB="$EMPTYJ"; mcp '{"jsonrpc":"2.0","id":432,"method":"tools/call","params":{"name":"build_request","arguments":{"package":"pkg-a","reason":"silent reader probe"}}}')
 t_not_contains "reader silent when none apply" "$out" "foresight (blockers first"
 
 # --- sequential_thinking: chain + commit in one session ----------------
